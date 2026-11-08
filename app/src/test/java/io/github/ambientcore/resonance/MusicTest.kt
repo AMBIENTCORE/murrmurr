@@ -25,6 +25,46 @@ class MusicTest {
         assertEquals("", taggedYear(null, "0", "0000", "Unknown", "999", "12345"))
     }
 
+    @Test fun artistDestinationsIncludePerformedTracksAndAlbumCredits() {
+        val performed = first.copy(artist = "Performer", albumArtist = "Various artists")
+        val guest = second.copy(artist = "performer", albumArtist = "Main band")
+        val credited = first.copy(uri = "content://music/3", artist = "Guest", albumArtist = "Performer")
+        val unrelated = first.copy(uri = "content://music/4", artist = "Performer 2", albumArtist = "Other")
+        val target = songDestinations(performed).single { it.label == "Go to artist" }
+        assertEquals(setOf(performed.uri, guest.uri, credited.uri),
+            songDestinationGroup(performed, target, listOf(performed, guest, credited, unrelated))?.songs?.map { it.uri }?.toSet())
+        assertEquals("Various artists", songDestinations(performed).single { it.label == "Go to album artist" }.value)
+    }
+
+    @Test fun albumDestinationsDoNotMixSameNamedAlbumsOrServerAlbumIds() {
+        val otherArtist = first.copy(uri = "content://music/3", albumArtist = "Another artist")
+        val target = songDestinations(first).single { it.category == LibraryCategory.ALBUMS }
+        assertEquals(listOf(first), songDestinationGroup(first, target, listOf(otherArtist, first))?.songs)
+        val server = first.copy(uri = "server:1", serverKey = "account", serverTrackId = "1", serverAlbumId = "album-a")
+        val otherAlbum = server.copy(uri = "server:2", serverTrackId = "2", serverAlbumId = "album-b")
+        val serverTarget = songDestinations(server).single { it.category == LibraryCategory.ALBUMS }
+        assertEquals(listOf(server), songDestinationGroup(server, serverTarget, listOf(server, otherAlbum))?.songs)
+    }
+
+    @Test fun genreDestinationsSplitTagsAndResolveCaseInsensitively() {
+        val multi = first.copy(genre = "Rock; Electronic; rock")
+        val targets = songDestinations(multi).filter { it.category == LibraryCategory.GENRES }
+        assertEquals(listOf("Rock", "Electronic"), targets.map { it.value })
+        val rock = second.copy(genre = "rock")
+        assertEquals(setOf(multi.uri, rock.uri),
+            songDestinationGroup(multi, targets.first(), listOf(multi, rock))?.songs?.map { it.uri }?.toSet())
+        assertNull(songDestinationGroup(multi, targets.last(), listOf(rock)))
+    }
+
+    @Test fun folderDestinationsKeepStorageRootsSeparate() {
+        val sibling = second.copy(path = "/storage/emulated/0/Music/02.mp3")
+        val sd = first.copy(uri = "content://music/3", path = "/storage/F85C-5692/Music/01.flac")
+        val target = songDestinations(first).single { it.category == LibraryCategory.FOLDERS }
+        assertEquals(setOf(first.uri, sibling.uri),
+            songDestinationGroup(first, target, listOf(first, sibling, sd))?.songs?.map { it.uri }?.toSet())
+        assertTrue(songDestinations(second).none { it.category == LibraryCategory.FOLDERS })
+    }
+
     @Test fun durationFormattingHandlesHoursAndNegativeValues() {
         assertEquals("0:00", durationLabel(-1))
         assertEquals("1:05", durationLabel(65_000))

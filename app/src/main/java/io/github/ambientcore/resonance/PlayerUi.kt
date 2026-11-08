@@ -52,6 +52,11 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.TextLinkStyles
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
@@ -63,6 +68,9 @@ import kotlinx.coroutines.flow.map
 
 private data class Collection(val name: String, val subtitle: String, val songs: List<Song>, val playlistId: String? = null,
     val groupByAlbum: Boolean = false)
+
+private data class SongBrowseRequest(val song: Song, val destination: SongDestination)
+private val LocalSongNavigation = staticCompositionLocalOf<((Song, SongDestination) -> Unit)?> { null }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -88,6 +96,7 @@ fun MurrmurrApp(model: MusicViewModel, requestPermission: () -> Unit) {
         var equalizer by remember { mutableStateOf(false) }
         var addSong by remember { mutableStateOf<Song?>(null) }
         var details by remember { mutableStateOf<Song?>(null) }
+        var songBrowseRequest by remember { mutableStateOf<SongBrowseRequest?>(null) }
         var createPlaylist by remember { mutableStateOf(false) }
         var createSmart by remember { mutableStateOf(false) }
         var editSmart by remember { mutableStateOf<MusicPlaylist?>(null) }
@@ -109,11 +118,45 @@ fun MurrmurrApp(model: MusicViewModel, requestPermission: () -> Unit) {
         LaunchedEffect(library.message) {
             library.message?.let { snackbar.showSnackbar(it); model.message(null) }
         }
+        LaunchedEffect(songBrowseRequest, source, localLibrary.loading, localLibrary.scanning, localLibrary.data.songs,
+            server.initialized, server.key, server.refreshing, server.data.songs) {
+            val request = songBrowseRequest ?: return@LaunchedEffect
+            val song = request.song
+            if (song.isServer) {
+                if (!server.initialized) return@LaunchedEffect
+                if (!server.configured || server.key != song.serverKey) {
+                    model.message("Connect this track's Navidrome account to browse its library.")
+                    songBrowseRequest = null
+                    return@LaunchedEffect
+                }
+            }
+            val targetSource = if (song.isServer) LibrarySource.SERVER else LibrarySource.LOCAL
+            if (source != targetSource) {
+                model.switchSource()
+                return@LaunchedEffect
+            }
+            if (!song.isServer && localLibrary.loading) return@LaunchedEffect
+            val group = songDestinationGroup(song, request.destination,
+                if (song.isServer) server.data.songs else localLibrary.data.songs)
+            if (group == null) {
+                if (song.isServer && server.refreshing || !song.isServer && localLibrary.scanning) return@LaunchedEffect
+                model.message("No matching tracks in this library. Refresh it and try again.")
+            } else {
+                tabs = tabs.mapIndexed { index, old -> if (index == targetSource.ordinal) 1 else old }
+                collection = Collection(group.name, group.subtitle, group.songs,
+                    groupByAlbum = request.destination.category in setOf(LibraryCategory.ARTISTS, LibraryCategory.GENRES))
+                expanded = false
+            }
+            songBrowseRequest = null
+        }
         BackHandler(expanded || collection != null || tab != 0) {
             when { expanded -> expanded = false; collection != null -> collection = null
                 else -> tabs = tabs.mapIndexed { index, old -> if (index == source.ordinal) 0 else old } }
         }
-        CompositionLocalProvider(LocalBrowseSource provides if (source == LibrarySource.SERVER) "server:${server.key}:" else "") {
+        CompositionLocalProvider(
+            LocalBrowseSource provides if (source == LibrarySource.SERVER) "server:${server.key}:" else "",
+            LocalSongNavigation provides { song, destination -> songBrowseRequest = SongBrowseRequest(song, destination) },
+        ) {
         Scaffold(
             modifier = Modifier.testTag("player-root"),
             containerColor = Ink,
@@ -538,7 +581,7 @@ private fun SongList(songs: List<Song>, model: MusicViewModel, favorites: Set<St
             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = if (libraryMode == null) 18.dp else 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (libraryMode != null) Text(subtitle, Modifier.weight(1f), color = Muted, fontSize = 12.sp, lineHeight = 16.sp)
                 else Column(Modifier.weight(1f)) {
-                    Text(title, fontSize = 26.sp, fontWeight = FontWeight.Bold, maxLines = 2)
+                    Text(title, modifier = Modifier.testTag("collection-title"), fontSize = 26.sp, fontWeight = FontWeight.Bold, maxLines = 2)
                     Text((if (groupByAlbum) "${groups.size} albums / " else "") + if (query.isBlank()) subtitle else "${matches.size} matches",
                         color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
                 }
@@ -619,6 +662,10 @@ private fun SongActions(song: Song, model: MusicViewModel, add: (Song) -> Unit, 
     remove: ((Song) -> Unit)? = null, button: @Composable (() -> Unit) -> Unit) {
     var menu by remember(song.uri) { mutableStateOf(false) }
     var rate by remember(song.uri) { mutableStateOf(false) }
+    var genres by remember(song.uri) { mutableStateOf(false) }
+    val navigate = LocalSongNavigation.current
+    val destinations = remember(song) { songDestinations(song) }
+    val genreDestinations = destinations.filter { it.category == LibraryCategory.GENRES }
     val feedback by remember(model, song.uri) {
         val data = if (song.isServer) model.server.map { it.data } else model.localLibrary.map { it.data }
         data.map { (song.uri in it.favorites) to (it.ratings[song.uri] ?: 0) }.distinctUntilChanged()
@@ -627,6 +674,18 @@ private fun SongActions(song: Song, model: MusicViewModel, add: (Song) -> Unit, 
     Box {
             button { menu = true }
             DropdownMenu(menu, { menu = false }) {
+                if (navigate != null) {
+                    destinations.filter { it.category != LibraryCategory.GENRES }.forEach { destination ->
+                        DropdownMenuItem(text = { Text(destination.label) }, onClick = {
+                            menu = false
+                            navigate(song, destination)
+                        })
+                    }
+                    if (genreDestinations.isNotEmpty()) DropdownMenuItem(text = { Text("Go to genre") }, onClick = {
+                        menu = false
+                        if (genreDestinations.size == 1) navigate(song, genreDestinations.single()) else genres = true
+                    })
+                }
                 DropdownMenuItem(text = { Text("Rate track") }, onClick = { rate = true; menu = false })
                 listOf("Play next" to { model.queue(song, true) }, "Add to queue" to { model.queue(song) },
                     (if (favorite) "Remove favorite" else "Favorite") to { model.favorite(song) },
@@ -637,7 +696,16 @@ private fun SongActions(song: Song, model: MusicViewModel, add: (Song) -> Unit, 
                 if (remove != null) DropdownMenuItem(text = { Text("Remove from playlist") }, onClick = { remove(song); menu = false })
             }
     }
-        if (rate) AlertDialog(onDismissRequest = { rate = false }, title = { Text("Rate track") },
+    if (genres && navigate != null) AlertDialog(onDismissRequest = { genres = false }, title = { Text("Go to genre") },
+        text = { Column(Modifier.verticalScroll(rememberScrollState())) {
+            genreDestinations.forEach { destination ->
+                TextButton(onClick = { genres = false; navigate(song, destination) }, modifier = Modifier.fillMaxWidth()) {
+                    Text(destination.value)
+                }
+            }
+        } },
+        confirmButton = { TextButton(onClick = { genres = false }) { Text("Cancel") } })
+    if (rate) AlertDialog(onDismissRequest = { rate = false }, title = { Text("Rate track") },
             text = { Column {
                 Text(song.title, maxLines = 2)
                 RatingPicker(rating) { model.rate(song, it) }
@@ -863,23 +931,44 @@ private fun NowPlayingMetadata(song: Song?, audio: AudioUi, compact: Boolean, de
     val catalog = song?.catalogNumber.orEmpty().ifBlank { currentAudio?.catalogNumber.orEmpty() }
     val smallText = if (dense) 10.sp else if (compact) 11.sp else 12.sp
     val smallLine = if (dense) 12.sp else 14.sp
+    val navigate = LocalSongNavigation.current
+    val destinations = song?.let(::songDestinations).orEmpty()
+    fun link(label: String): Modifier {
+        val destination = destinations.firstOrNull { it.label == label }
+        return if (song != null && destination != null && navigate != null) {
+            Modifier.clickable(role = Role.Button, onClickLabel = label) { navigate(song, destination) }
+        } else Modifier
+    }
+    val linkColor = Lime
+    val genreText = buildAnnotatedString {
+        append("Genres: ")
+        val genres = destinations.filter { it.category == LibraryCategory.GENRES }
+        if (genres.isEmpty()) append("-")
+        genres.forEachIndexed { index, destination ->
+            if (index > 0) append(", ")
+            if (song != null && navigate != null) {
+                withLink(LinkAnnotation.Clickable("genre:${destination.value}", styles = TextLinkStyles(SpanStyle(color = linkColor)),
+                    linkInteractionListener = { navigate(song, destination) })) { append(destination.value) }
+            } else append(destination.value)
+        }
+    }
     Column(Modifier.fillMaxWidth().testTag("now-playing-metadata"), verticalArrangement = Arrangement.spacedBy(if (compact) 1.dp else 2.dp)) {
         Text(song?.artist.orEmpty(), color = Muted, fontSize = if (dense) 11.sp else if (compact) 13.sp else 14.sp,
             lineHeight = if (dense) 14.sp else if (compact) 16.sp else 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.testTag("now-playing-artist"))
+            modifier = Modifier.testTag("now-playing-artist").then(link("Go to artist")))
         Text(song?.title ?: "No track selected", fontWeight = FontWeight.Bold, fontSize = if (dense) 17.sp else if (compact) 18.sp else 22.sp,
             lineHeight = if (dense) 20.sp else if (compact) 22.sp else 26.sp, maxLines = if (compact) 1 else 2,
             overflow = TextOverflow.Ellipsis, modifier = Modifier.testTag("now-playing-title"))
         Text(song?.album.orEmpty(), fontSize = if (compact) 12.sp else 13.sp, lineHeight = if (dense) 14.sp else 16.sp,
             maxLines = 1, overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.testTag("now-playing-album"))
+            modifier = Modifier.testTag("now-playing-album").then(link("Go to album")))
         Text(taggedYear(currentAudio?.sourceYear, song?.year).ifBlank { "-" }, color = Muted, fontSize = smallText,
             lineHeight = smallLine, maxLines = 1,
             modifier = Modifier.testTag("now-playing-year"))
         if (catalog.isNotBlank()) Text("Catalog No. $catalog", color = Muted, fontSize = smallText,
             lineHeight = smallLine, maxLines = 1, overflow = TextOverflow.Ellipsis,
             modifier = Modifier.testTag("now-playing-catalog"))
-        Text("Genres: ${song?.genres?.joinToString(", ").orEmpty().ifBlank { "-" }}", color = Muted, fontSize = smallText,
+        Text(genreText, color = Muted, fontSize = smallText,
             lineHeight = smallLine, maxLines = 1, overflow = TextOverflow.Ellipsis,
             modifier = Modifier.testTag("now-playing-genres"))
         if (song != null) Text(trackFormatLabel(song, currentAudio?.sourceCodec.orEmpty(),

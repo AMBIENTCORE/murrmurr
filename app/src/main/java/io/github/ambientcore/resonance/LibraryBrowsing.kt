@@ -19,6 +19,47 @@ enum class LibraryCategory(val label: String) {
 
 data class LibraryGroup(val id: String, val name: String, val subtitle: String, val songs: List<Song>)
 
+data class SongDestination(val category: LibraryCategory, val value: String, val label: String)
+
+fun songDestinations(song: Song): List<SongDestination> = buildList {
+    if (song.artist.isNotBlank()) add(SongDestination(LibraryCategory.ARTISTS, song.artist, "Go to artist"))
+    if (song.album.isNotBlank()) add(SongDestination(LibraryCategory.ALBUMS, song.albumKey, "Go to album"))
+    if (song.albumArtist.isNotBlank() && !song.albumArtist.equals(song.artist, true)) {
+        add(SongDestination(LibraryCategory.ARTISTS, song.albumArtist, "Go to album artist"))
+    }
+    song.genres.forEach { add(SongDestination(LibraryCategory.GENRES, it, "Go to genre")) }
+    if (song.folder.isNotBlank() || song.path.isNotBlank()) {
+        add(SongDestination(LibraryCategory.FOLDERS, "", "Go to folder"))
+    }
+}
+
+fun songDestinationGroup(song: Song, destination: SongDestination, songs: List<Song>): LibraryGroup? {
+    return when (destination.category) {
+        LibraryCategory.ARTISTS -> {
+            val tracks = songs.filter {
+                it.artist.equals(destination.value, true) || it.albumArtist.equals(destination.value, true)
+            }
+            tracks.takeIf { it.isNotEmpty() }?.let {
+                LibraryGroup(destination.value, destination.value, "Artists", sortedSongs(it, SongSort.ALBUM))
+            }
+        }
+        LibraryCategory.ALBUMS -> libraryGroups(songs, LibraryCategory.ALBUMS).firstOrNull { it.id == destination.value }
+            ?.let { it.copy(songs = sortedSongs(it.songs, SongSort.ALBUM)) }
+        LibraryCategory.GENRES -> libraryGroups(songs, LibraryCategory.GENRES)
+            .firstOrNull { it.id == destination.value.lowercase(Locale.ROOT) }
+            ?.let { it.copy(songs = sortedSongs(it.songs, SongSort.ALBUM)) }
+        LibraryCategory.FOLDERS -> {
+            var leaf = folderTree(listOf(song)).single()
+            while (leaf.children.isNotEmpty()) leaf = leaf.children.single()
+            fun find(nodes: List<FolderNode>): FolderNode? = nodes.firstNotNullOfOrNull {
+                if (it.id == leaf.id) it else find(it.children)
+            }
+            find(folderTree(songs))?.let { LibraryGroup(it.id, it.name, it.path, sortedSongs(it.songs, SongSort.ALBUM)) }
+        }
+        LibraryCategory.SONGS -> throw IllegalArgumentException("Songs is not a track metadata destination")
+    }
+}
+
 fun libraryGroups(songs: List<Song>, category: LibraryCategory): List<LibraryGroup> {
     val grouped = linkedMapOf<String, MutableList<Song>>()
     val names = mutableMapOf<String, String>()

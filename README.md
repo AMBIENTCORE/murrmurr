@@ -53,7 +53,7 @@ NAS access is through Navidrome, not direct SMB or NFS shares.
 
 1. Download the [latest release APK](https://github.com/AMBIENTCORE/murrmurr/releases/latest)
    to your Android device. Files are named
-   `murmurr_<version>.apk`, for example `murmurr_0.9.9.apk`.
+   `murmurr_<version>.apk`, for example `murmurr_0.9.10.apk`.
 2. Open the APK from your browser's downloads or a file manager.
 3. If Android prompts you, allow that browser or file manager to
    **Install unknown apps**, then return to the APK.
@@ -100,6 +100,12 @@ The labels are **Catalog No.** and **Genres:**. The gear opens Settings; the
 equalizer and queue icons provide direct access to their controls. **...** opens
 the song menu for ratings, favorites, queue actions, track information and adding
 local tracks to a playlist.
+
+Tap the artist or album name to browse its tracks. Individual genre names link
+to their genre collections. The song menu also offers **Go to artist**,
+**Go to album**, **Go to album artist** when different, **Go to genre**, and
+**Go to folder** when available. Navigation uses the track's Local/Server source
+without changing playback or the queue.
 
 Android tablets are supported in portrait, landscape and resizable windows.
 Landscape and near-square Now Playing windows place artwork beside metadata and

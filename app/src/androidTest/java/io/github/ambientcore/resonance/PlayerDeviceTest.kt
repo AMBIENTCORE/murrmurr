@@ -571,6 +571,167 @@ class PlayerDeviceTest {
         }
     }
 
+    @Test fun nowPlayingMetadataAndMenuNavigateWithoutReplacingPlayback() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val repository = LibraryRepository(context)
+        val original = repository.load()
+        val files = (1..5).map { File(context.filesDir, "resonance-qa-navigation-$it.wav") }
+        var scenario: ActivityScenario<MainActivity>? = null
+        try {
+            files.forEach { writeSilentWave(it) }
+            val songs = files.mapIndexed { index, file ->
+                Song(Uri.fromFile(file).toString(), "Navigation ${index + 1}",
+                    artist = if (index < 2) "Guest Artist" else "Other Artist",
+                    albumArtist = if (index == 1) "Guest Artist" else if (index == 3) "Unrelated Artist" else "Album Artist",
+                    album = when (index) { 0, 2 -> "Navigation Album"; 1 -> "Guest Album"; 3 -> "Unrelated Album"; else -> "Other Album" },
+                    genre = when (index) { 0 -> "Rock; Electronic"; 2 -> "Electronic"; 3 -> "Rock"; else -> "Jazz" },
+                    track = index + 1, duration = 30_000, fileName = file.name,
+                    folder = if (index in setOf(0, 2, 3)) "Navigation Folder" else "Other Folder")
+            }
+            repository.save(original.copy(songs = songs))
+            scenario = ActivityScenario.launch(MainActivity::class.java)
+            lateinit var model: MusicViewModel
+            scenario.onActivity {
+                it.window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                model = ViewModelProvider(it)[MusicViewModel::class.java]
+            }
+            compose.waitUntil(10_000) { model.playing.value.connected && model.localLibrary.value.data.songs == songs }
+            scenario.onActivity { model.play(songs.take(2)) }
+            compose.waitUntil(10_000) { model.playing.value.playing }
+            scenario.onActivity { model.togglePlay() }
+            compose.waitUntil(5000) { !model.playing.value.playing }
+            scenario.onActivity { model.seek(1000) }
+            compose.waitUntil(5000) { model.playing.value.position == 1000L }
+            val queue = model.playing.value.queue
+            val position = model.playing.value.position
+            fun openPlayer() {
+                compose.onNodeWithTag("mini-player").performClick()
+                compose.onNodeWithTag("now-playing-options").assertIsDisplayed()
+            }
+            fun checkCollection(title: String, vararg indexes: Int) {
+                compose.onNodeWithTag("song-list").performScrollToNode(hasTestTag("collection-title"))
+                compose.onNodeWithTag("collection-title").assertTextEquals(title)
+                indexes.forEach { index ->
+                    compose.onNodeWithTag("song-list").performScrollToNode(hasTestTag("track-${songs[index].uri}"))
+                    compose.onNodeWithTag("track-${songs[index].uri}").assertIsDisplayed()
+                }
+                assertEquals(queue, model.playing.value.queue)
+                assertEquals(songs.first().uri, model.playing.value.song?.uri)
+                assertEquals(position, model.playing.value.position)
+                assertFalse(model.playing.value.playing)
+            }
+            fun menu(label: String) {
+                openPlayer()
+                compose.onNodeWithTag("now-playing-options").performClick()
+                compose.onNodeWithText(label).performClick()
+            }
+            openPlayer()
+            compose.onNodeWithTag("now-playing-artist").performClick()
+            checkCollection("Guest Artist", 0, 1)
+            openPlayer()
+            compose.onNodeWithTag("now-playing-album").performClick()
+            checkCollection("Navigation Album", 0, 2)
+            openPlayer()
+            val layouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+            compose.onNodeWithTag("now-playing-genres").performSemanticsAction(
+                androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult) { assertTrue(it(layouts)) }
+            val layout = layouts.single()
+            val link = layout.layoutInput.text.getLinkAnnotations(0, layout.layoutInput.text.length)
+                .single { layout.layoutInput.text.substring(it.start, it.end) == "Electronic" }
+            val point = layout.getBoundingBox(link.start).center
+            compose.onNodeWithTag("now-playing-genres").performTouchInput { click(point) }
+            checkCollection("Electronic", 0, 2)
+            menu("Go to artist")
+            checkCollection("Guest Artist", 0, 1)
+            menu("Go to album")
+            checkCollection("Navigation Album", 0, 2)
+            menu("Go to album artist")
+            checkCollection("Album Artist", 0, 2, 4)
+            menu("Go to genre")
+            compose.onNode(hasText("Rock") and hasAnyAncestor(isDialog())).performClick()
+            checkCollection("Rock", 0, 3)
+            menu("Go to folder")
+            checkCollection("Navigation Folder", 0, 2, 3)
+        } finally {
+            try { scenario?.close() } finally {
+                context.stopService(android.content.Intent(context, PlaybackService::class.java))
+                repository.save(original)
+                files.forEach { check(!it.exists() || it.delete()) }
+            }
+        }
+    }
+
+    @Test fun trackNavigationUsesPlayingSourceWhenBrowsingAnotherLibrary() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val repository = LibraryRepository(context)
+        val original = repository.load()
+        val accountFile = File(context.filesDir, "server-account.enc")
+        val previousAccount = accountFile.takeIf { it.exists() }?.readBytes()
+        val prefs = context.getSharedPreferences("playback", Context.MODE_PRIVATE)
+        val previousSource = prefs.getString("library_source", null)
+        val file = File(context.filesDir, "resonance-qa-navigation-source.wav")
+        var scenario: ActivityScenario<MainActivity>? = null
+        var remote: NavidromeFixture? = null
+        var key = ""
+        try {
+            writeSilentWave(file)
+            remote = NavidromeFixture(file.readBytes(), byteArrayOf())
+            val account = serverAccount(remote.url, "fixture-user", "fixture-password", true)
+            key = account.key
+            ServerAccountStore(context).save(account)
+            val serverData = NavidromeClient(account).catalog({}, {})
+            ServerCatalogStore(context, key).save(serverData)
+            val local = Song(Uri.fromFile(file).toString(), "Source navigation", "Local Navigation Artist", "Local Navigation Album",
+                duration = 30_000, fileName = file.name)
+            repository.save(original.copy(songs = listOf(local)))
+            prefs.edit().putString("library_source", "LOCAL").apply()
+            scenario = ActivityScenario.launch(MainActivity::class.java)
+            lateinit var model: MusicViewModel
+            scenario.onActivity {
+                it.window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                model = ViewModelProvider(it)[MusicViewModel::class.java]
+            }
+            compose.waitUntil(10_000) { model.playing.value.connected && model.server.value.initialized &&
+                model.localLibrary.value.data.songs == listOf(local) }
+            scenario.onActivity { model.play(listOf(local)) }
+            compose.waitUntil(10_000) { model.playing.value.playing }
+            scenario.onActivity { model.togglePlay(); model.switchSource() }
+            compose.waitUntil(5000) { !model.playing.value.playing && model.source.value == LibrarySource.SERVER }
+            val localQueue = model.playing.value.queue
+            compose.onNodeWithTag("mini-player").performClick()
+            compose.onNodeWithTag("now-playing-artist").performClick()
+            compose.waitUntil(5000) { model.source.value == LibrarySource.LOCAL }
+            compose.onNodeWithTag("song-list").performScrollToNode(hasTestTag("collection-title"))
+            compose.onNodeWithTag("collection-title").assertTextEquals("Local Navigation Artist")
+            assertEquals(localQueue, model.playing.value.queue)
+            val serverSong = serverData.songs.first()
+            scenario.onActivity { model.play(listOf(serverSong)) }
+            compose.waitUntil(10_000) { model.playing.value.playing && model.playing.value.song?.uri == serverSong.uri }
+            scenario.onActivity { model.togglePlay() }
+            compose.waitUntil(5000) { !model.playing.value.playing }
+            val serverQueue = model.playing.value.queue
+            compose.onNodeWithTag("mini-player").performClick()
+            compose.onNodeWithTag("now-playing-album").performClick()
+            compose.waitUntil(5000) { model.source.value == LibrarySource.SERVER }
+            compose.onNodeWithTag("song-list").performScrollToNode(hasTestTag("collection-title"))
+            compose.onNodeWithTag("collection-title").assertTextEquals("Server Album")
+            assertEquals(serverQueue, model.playing.value.queue)
+            assertEquals(serverSong.uri, model.playing.value.song?.uri)
+            assertFalse(model.playing.value.playing)
+        } finally {
+            try { scenario?.close() } finally {
+                context.stopService(android.content.Intent(context, PlaybackService::class.java))
+                repository.save(original)
+                if (key.isNotEmpty()) ServerCatalogStore(context, key).clear()
+                if (previousAccount == null) check(!accountFile.exists() || accountFile.delete()) else accountFile.writeBytes(previousAccount)
+                if (previousSource == null) prefs.edit().remove("library_source").apply()
+                else prefs.edit().putString("library_source", previousSource).apply()
+                check(!file.exists() || file.delete())
+                remote?.close()
+            }
+        }
+    }
+
     @Test fun libraryGridsAddColumnsOnlyInWideWindows() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         var scenario: ActivityScenario<MainActivity>? = null
