@@ -23,7 +23,7 @@ and music hosted on a NAS running [Navidrome](https://www.navidrome.org/).
 The **Local / Server** button switches the library you browse without stopping
 the current track or replacing the queue. Each source keeps its own browsing state.
 
-The app is developed for the HiBy R4 and supports Android 11 and newer.
+The app supports Android 11 and newer.
 NAS access is through Navidrome, not direct SMB or NFS shares.
 
 ### Features
@@ -32,7 +32,7 @@ NAS access is through Navidrome, not direct SMB or NFS shares.
 - Background playback, notification and lock-screen controls, shuffle, repeat and an editable queue.
 - Local playlists, favorites, star ratings and rating-based smart playlists.
 - Read-only browsing of Navidrome playlists, with server-side favorites and ratings.
-- M3U/M3U8 playlist import/export and MusicBee-compatible embedded rating import for local music.
+- M3U/M3U8 playlist import/export for local music.
 - Library statistics, device-recorded listening history and an optional ten-band equalizer.
 
 ### Built with
@@ -53,7 +53,7 @@ NAS access is through Navidrome, not direct SMB or NFS shares.
 
 1. Download the [latest release APK](https://github.com/AMBIENTCORE/murrmurr/releases/latest)
    to your Android device. Files are named
-   `murmurr_<version>.apk`, for example `murmurr_0.9.5.apk`.
+   `murmurr_<version>.apk`, for example `murmurr_0.9.8.apk`.
 2. Open the APK from your browser's downloads or a file manager.
 3. If Android prompts you, allow that browser or file manager to
    **Install unknown apps**, then return to the APK.
@@ -63,6 +63,12 @@ For updates, install the newer APK over the existing app rather than uninstallin
 first. Uninstalling removes app-local playlists, ratings and listening history.
 
 ## Usage
+
+### Themes
+
+Open **Settings > Themes** to select **Default**, the original palette, or
+**Cinder**, with grey surfaces and cream accents from the logo. The choice is saved
+across restarts and applies to both Local and Server.
 
 ### Local music
 

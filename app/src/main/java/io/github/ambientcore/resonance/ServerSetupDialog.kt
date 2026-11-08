@@ -77,7 +77,7 @@ fun ServerSetupDialog(model: MusicViewModel) {
                     modifier = Modifier.testTag("server-http"))
                 Text("Allow HTTP over trusted LAN / Tailscale", fontSize = 12.sp)
             }
-            Text("Connect Tailscale on both the NAS and R4 for access away from home. HTTP is not encrypted by this app; only use it inside a trusted network or VPN.",
+            Text("Connect Tailscale on both your Android device and NAS for access away from home. HTTP is not encrypted by this app; only use it inside a trusted network or VPN.",
                 color = Muted, fontSize = 11.sp, lineHeight = 16.sp)
             Text("Switching sources changes browsing, not the playing track. Server audio streams in its original format; no full-library audio download.",
                 color = Muted, fontSize = 11.sp, lineHeight = 16.sp)

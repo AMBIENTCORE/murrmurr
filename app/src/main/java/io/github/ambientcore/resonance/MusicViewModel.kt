@@ -78,6 +78,8 @@ data class AudioUi(
 class MusicViewModel(application: Application) : AndroidViewModel(application), SharedPreferences.OnSharedPreferenceChangeListener {
     private val repository = LibraryRepository(application)
     private val prefs = application.getSharedPreferences("playback", Application.MODE_PRIVATE)
+    private val mutableTheme = MutableStateFlow(readTheme())
+    val theme = mutableTheme.asStateFlow()
     private val historyRepository = HistoryRepository(application)
     private val libraryMutex = Mutex()
     private val mutableLibrary = MutableStateFlow(LibraryUi())
@@ -597,6 +599,18 @@ class MusicViewModel(application: Application) : AndroidViewModel(application), 
         )
     }
 
+    private fun readTheme(): AppTheme {
+        val saved = prefs.getString(THEME_PREF, AppTheme.DEFAULT.name)
+        val restored = AppTheme.entries.firstOrNull { it.name == saved }
+        if (restored == null) Log.w("ResonanceTheme", "Unknown saved theme: $saved")
+        return restored ?: AppTheme.DEFAULT
+    }
+
+    fun setTheme(theme: AppTheme) {
+        mutableTheme.value = theme
+        prefs.edit().putString(THEME_PREF, theme.name).apply()
+    }
+
     fun switchSource() {
         if (mutableSource.value == LibrarySource.SERVER) {
             mutableSource.value = LibrarySource.LOCAL
@@ -740,7 +754,8 @@ class MusicViewModel(application: Application) : AndroidViewModel(application), 
     override fun onSharedPreferenceChanged(sharedPreferences: SharedPreferences?, key: String?) {
         if (key == "error") {
             prefs.getString("error", null)?.let { message(it); prefs.edit().remove("error").apply() }
-        } else if (key == "history_revision") reloadHistory()
+        } else if (key == THEME_PREF) mutableTheme.value = readTheme()
+        else if (key == "history_revision") reloadHistory()
         else if (key in setOf("audio_info", "output_info", "source_bits", "source_lossy", "output_bits", "output_float", "source_note", "output_sample_rate", EQUALIZER_PREF)) updateAudio()
     }
 

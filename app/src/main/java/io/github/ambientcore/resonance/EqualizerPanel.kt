@@ -158,6 +158,8 @@ private fun EqSlider(value: Float, label: String, tag: String, range: ClosedFloa
 
 @Composable
 private fun EqualizerGraph(curve: EqualizerCurve, enabled: Boolean) {
+    val muted = Muted
+    val accent = Lime
     val high = minOf(20_000.0, curve.sampleRate * .49)
     val points = remember(curve) { (0..160).map {
         val frequency = 20.0 * (high / 20.0).pow(it / 160.0)
@@ -171,11 +173,11 @@ private fun EqualizerGraph(curve: EqualizerCurve, enabled: Boolean) {
         .testTag("equalizer-curve").semantics { contentDescription = "Equalizer response, minus 24 to plus 24 decibels" }) {
         for (db in listOf(-12, 0, 12)) {
             val y = size.height * (.5f - db / 48f)
-            drawLine(Muted.copy(alpha = if (db == 0) .6f else .2f), Offset(0f, y), Offset(size.width, y), 1.dp.toPx())
+            drawLine(muted.copy(alpha = if (db == 0) .6f else .2f), Offset(0f, y), Offset(size.width, y), 1.dp.toPx())
         }
         EQ_FREQUENCIES.filter { it < high }.forEach { frequency ->
             val x = (log10(frequency / 20) / log10(high / 20)).toFloat() * size.width
-            drawLine(Muted.copy(alpha = .15f), Offset(x, 0f), Offset(x, size.height), 1.dp.toPx())
+            drawLine(muted.copy(alpha = .15f), Offset(x, 0f), Offset(x, size.height), 1.dp.toPx())
         }
         val path = Path()
         points.forEachIndexed { index, point ->
@@ -183,7 +185,7 @@ private fun EqualizerGraph(curve: EqualizerCurve, enabled: Boolean) {
             val y = size.height * (.5f - point.second / 48f)
             if (index == 0) path.moveTo(x, y) else path.lineTo(x, y)
         }
-        drawPath(path, if (enabled) Lime else Muted, style = Stroke(2.dp.toPx()))
+        drawPath(path, if (enabled) accent else muted, style = Stroke(2.dp.toPx()))
     }
     }
 }

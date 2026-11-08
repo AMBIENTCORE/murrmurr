@@ -59,11 +59,11 @@ fun StatsScreen(data: LibraryData, history: HistoryUi, play: (Song) -> Unit) {
             }
         } }
         fullItem {
-            StatsHeading("Listening history")
-            Text("Counts after 30 seconds of playback, or half of tracks shorter than a minute. Seeking and paused time are excluded.",
-                color = Muted, fontSize = 11.sp, lineHeight = 17.sp, modifier = Modifier.padding(top = 6.dp))
-            if (history.loading) Text("Loading history", color = Muted, fontSize = 12.sp)
-            history.error?.let { Text(it, color = androidx.compose.material3.MaterialTheme.colorScheme.error, fontSize = 12.sp) }
+            Column(Modifier.fillMaxWidth().testTag("stats-history-heading")) {
+                StatsHeading("Listening history")
+                if (history.loading) Text("Loading history", color = Muted, fontSize = 12.sp)
+                history.error?.let { Text(it, color = androidx.compose.material3.MaterialTheme.colorScheme.error, fontSize = 12.sp) }
+            }
         }
         if (!history.loading && history.error == null) {
             fullItem { StatsHeading("Recently played") }
@@ -86,15 +86,13 @@ fun StatsScreen(data: LibraryData, history: HistoryUi, play: (Song) -> Unit) {
         fullItem { StatsHeading("Ratings") }
         items(stats.ratings, key = { "rating:${it.label}" }) { StatsBreakdown(it, stats.tracks, mode) }
         fullItem {
-            StatsHeading("Top genres")
-            Text("Tracks with multiple genres count in each genre.", color = Muted, fontSize = 11.sp,
-                modifier = Modifier.padding(top = 6.dp))
+            Column(Modifier.fillMaxWidth().testTag("stats-genres-heading")) {
+                StatsHeading("Top genres")
+                Text("Tracks with multiple genres count in each genre.", color = Muted, fontSize = 11.sp,
+                    lineHeight = 17.sp, modifier = Modifier.padding(top = 6.dp))
+            }
         }
         items(stats.genres.take(10), key = { "genre:${it.label}" }) { StatsBreakdown(it, stats.tracks, mode) }
-        fullItem {
-            Text("Library duration and audio size use indexed metadata, not listening time. Unknown durations and file sizes contribute zero.",
-                color = Muted, fontSize = 11.sp, lineHeight = 17.sp, modifier = Modifier.padding(vertical = 12.dp))
-        }
     }
 }
 

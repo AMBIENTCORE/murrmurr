@@ -9,9 +9,12 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
@@ -59,6 +62,92 @@ class PlayerDeviceTest {
     @After fun releaseTestWindowObserver() {
         InstrumentationRegistry.getInstrumentation().runOnMainSync {
             ActivityLifecycleMonitorRegistry.getInstance().removeLifecycleCallback(keepTestWindowAwake)
+        }
+    }
+
+    @Test fun themesPersistAcrossRecreationAndNewLaunch() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val prefs = context.getSharedPreferences("playback", Context.MODE_PRIVATE)
+        val originalTheme = prefs.getString(THEME_PREF, null)
+        var scenario: ActivityScenario<MainActivity>? = null
+        try {
+            prefs.edit().remove(THEME_PREF).apply()
+            scenario = ActivityScenario.launch(MainActivity::class.java)
+            lateinit var model: MusicViewModel
+            scenario.onActivity { model = ViewModelProvider(it)[MusicViewModel::class.java] }
+            assertEquals(AppTheme.DEFAULT, model.theme.value)
+            fun assertBackground(theme: AppTheme) {
+                compose.waitUntil(5000) {
+                    val pixels = compose.onNodeWithTag("player-root").captureToImage().toPixelMap()
+                    pixels[1, 1] == theme.colorScheme.background &&
+                        pixels[1, pixels.height / 2] == theme.colorScheme.background
+                }
+                val pixels = compose.onNodeWithTag("player-root").captureToImage().toPixelMap()
+                assertEquals(theme.colorScheme.background, pixels[1, 1])
+                assertEquals(theme.colorScheme.background, pixels[1, pixels.height / 2])
+            }
+            fun closeSettings() {
+                val automation = InstrumentationRegistry.getInstrumentation().uiAutomation
+                android.os.ParcelFileDescriptor.AutoCloseInputStream(
+                    automation.executeShellCommand("input keyevent KEYCODE_BACK")).use { it.readBytes() }
+                compose.waitUntil(5000) { compose.onAllNodesWithTag("theme-cinder").fetchSemanticsNodes().isEmpty() }
+            }
+            assertBackground(AppTheme.DEFAULT)
+            compose.onNodeWithContentDescription("Settings").performClick()
+            compose.onNodeWithText("Embedded ratings").assertDoesNotExist()
+            compose.onNodeWithText("Import embedded ratings").assertDoesNotExist()
+            compose.onNodeWithText("Plays count after 30 seconds, or half the duration for tracks under one minute.").assertExists()
+            compose.onNodeWithText("Connect Tailscale on your Android device and NAS when using the server's Tailscale address. Streaming requires connectivity; cached metadata does not make audio available offline.").assertExists()
+            compose.waitUntil(5000) { model.server.value.initialized }
+            compose.onNodeWithText("Configure Navidrome server").performScrollTo().performClick()
+            compose.onNodeWithText("Connect Tailscale on both your Android device and NAS for access away from home. HTTP is not encrypted by this app; only use it inside a trusted network or VPN.").assertExists()
+            compose.onNodeWithText("Cancel").performClick()
+            val audioLabels = compose.onAllNodes(hasAnyAncestor(hasTestTag("settings-audio-output")),
+                useUnmergedTree = true).fetchSemanticsNodes()
+                .filter { it.config.contains(androidx.compose.ui.semantics.SemanticsProperties.Text) }
+                .flatMap { it.config[androidx.compose.ui.semantics.SemanticsProperties.Text] }
+                .map { it.text }
+            assertEquals(listOf("Audio output", "Equalizer"), audioLabels)
+            val audioPixels = compose.onNodeWithTag("settings-audio-output").performScrollTo().captureToImage().toPixelMap()
+            for (y in 0 until audioPixels.height) for (x in 0 until audioPixels.width) {
+                assertNotEquals("Audio output must not have pink dividers", PlayerColors.secondary, audioPixels[x, y])
+                assertNotEquals("Audio output must not have cyan dividers", PlayerColors.tertiary, audioPixels[x, y])
+            }
+            compose.onNodeWithTag("theme-default").performScrollTo().assertIsSelected()
+            compose.onNodeWithTag("theme-cinder").performScrollTo().assertIsNotSelected().performClick()
+            compose.waitUntil(5000) { model.theme.value == AppTheme.CINDER }
+            assertEquals(AppTheme.CINDER.name, prefs.getString(THEME_PREF, null))
+            compose.onNodeWithTag("theme-cinder").assertIsSelected()
+            closeSettings()
+            compose.onNodeWithTag("theme-cinder").assertDoesNotExist()
+            assertBackground(AppTheme.CINDER)
+            scenario.recreate()
+            scenario.onActivity { model = ViewModelProvider(it)[MusicViewModel::class.java] }
+            assertEquals(AppTheme.CINDER, model.theme.value)
+            assertBackground(AppTheme.CINDER)
+            scenario.close()
+            scenario = ActivityScenario.launch(MainActivity::class.java)
+            scenario.onActivity { model = ViewModelProvider(it)[MusicViewModel::class.java] }
+            assertEquals(AppTheme.CINDER, model.theme.value)
+            assertBackground(AppTheme.CINDER)
+            compose.onNodeWithContentDescription("Settings").performClick()
+            compose.onNodeWithTag("theme-cinder").performScrollTo().assertIsSelected()
+            compose.onNodeWithTag("theme-default").performScrollTo().performClick()
+            compose.waitUntil(5000) { model.theme.value == AppTheme.DEFAULT }
+            closeSettings()
+            assertBackground(AppTheme.DEFAULT)
+            prefs.edit().putString(THEME_PREF, "unknown-theme").apply()
+            compose.waitUntil(5000) { model.theme.value == AppTheme.DEFAULT }
+            scenario.close()
+            scenario = ActivityScenario.launch(MainActivity::class.java)
+            scenario.onActivity { model = ViewModelProvider(it)[MusicViewModel::class.java] }
+            assertEquals(AppTheme.DEFAULT, model.theme.value)
+            assertBackground(AppTheme.DEFAULT)
+        } finally {
+            try { scenario?.close() } finally {
+                context.stopService(android.content.Intent(context, PlaybackService::class.java))
+                prefs.edit().putString(THEME_PREF, originalTheme).apply()
+            }
         }
     }
 
@@ -206,7 +295,7 @@ class PlayerDeviceTest {
                     assertTrue(it(titleLayouts))
                 }
             assertEquals("Track text must inherit the readable theme foreground",
-                Paper, titleLayouts.single().layoutInput.style.color)
+                PlayerColors.onSurface, titleLayouts.single().layoutInput.style.color)
             assertNotEquals("Restored player typography must not be monospace",
                 androidx.compose.ui.text.font.FontFamily.Monospace, titleLayouts.single().layoutInput.style.fontFamily)
             compose.onNodeWithText("QA Track 1").performClick()
@@ -862,6 +951,62 @@ class PlayerDeviceTest {
         }
     }
 
+    @Test fun statisticsSectionCaptionsDoNotOverlapAcrossViewModes() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val prefs = context.getSharedPreferences("browse", Context.MODE_PRIVATE)
+        val originalMode = prefs.getString("mode:stats", null)
+        val fontScale = mutableStateOf(1f)
+        val history = mutableStateOf(HistoryUi(loading = true))
+        val data = LibraryData(songs = listOf(Song("content://stats-qa/track", "Stats test",
+            genre = "Rock; Jazz", duration = 30_000, fileName = "stats.flac", size = 1000)))
+        val firstGenre = libraryStatistics(data.songs, data.favorites, data.ratings).genres.first().label
+        val removedHistoryNote = "Counts after 30 seconds of playback, or half of tracks shorter than a minute. Seeking and paused time are excluded."
+        val removedFooter = "Library duration and audio size use indexed metadata, not listening time. Unknown durations and file sizes contribute zero."
+        val genresNote = "Tracks with multiple genres count in each genre."
+        var scenario: ActivityScenario<MainActivity>? = null
+        try {
+            scenario = ActivityScenario.launch(MainActivity::class.java)
+            scenario.onActivity { activity ->
+                activity.setContent {
+                    val density = LocalDensity.current
+                    CompositionLocalProvider(LocalDensity provides Density(density.density, fontScale.value)) {
+                        MurrmurrTheme(AppTheme.CINDER) {
+                            StatsScreen(data, history.value) {}
+                        }
+                    }
+                }
+            }
+            fun assertSection(tag: String, vararg labels: String) {
+                compose.onNodeWithTag("stats-screen").performScrollToNode(hasTestTag(tag))
+                val bounds = labels.map { compose.onNodeWithText(it, useUnmergedTree = true).getUnclippedBoundsInRoot() }
+                bounds.zipWithNext().forEachIndexed { index, (first, second) ->
+                    assertTrue("${labels[index]} at $first must not overlap ${labels[index + 1]} at $second", first.bottom <= second.top)
+                }
+            }
+            for (scale in listOf(1f, 1.5f)) {
+                compose.runOnIdle { fontScale.value = scale }
+                BrowseMode.entries.forEach { mode ->
+                    compose.onNodeWithTag("stats-screen").performScrollToNode(hasTestTag("view-mode-stats"))
+                    compose.onNodeWithTag("view-mode-stats").performClick()
+                    compose.onNodeWithText(mode.label).performClick()
+                    assertSection("stats-history-heading", "Listening history", "Loading history")
+                    compose.onNodeWithText(removedHistoryNote).assertDoesNotExist()
+                    assertSection("stats-genres-heading", "Top genres", genresNote, firstGenre)
+                    compose.onNodeWithText(removedFooter).assertDoesNotExist()
+                }
+            }
+            compose.runOnIdle { history.value = HistoryUi(loading = false, error = "History test error") }
+            assertSection("stats-history-heading", "Listening history", "History test error")
+            compose.runOnIdle { history.value = HistoryUi(loading = false) }
+            assertSection("stats-history-heading", "Listening history", "Recently played")
+        } finally {
+            try { scenario?.close() } finally {
+                context.stopService(android.content.Intent(context, PlaybackService::class.java))
+                prefs.edit().putString("mode:stats", originalMode).apply()
+            }
+        }
+    }
+
     @Test fun toolbarShuffleAndFloatingStatisticsNavigation() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val repository = LibraryRepository(context)
@@ -1081,7 +1226,8 @@ class PlayerDeviceTest {
             scenario.onActivity { model = ViewModelProvider(it)[MusicViewModel::class.java] }
             compose.waitUntil(10_000) { !model.library.value.loading }
             compose.onNodeWithContentDescription("Settings").performClick()
-            compose.onNodeWithText("Import embedded ratings").performScrollTo().performClick()
+            compose.onNodeWithText("Import embedded ratings").assertDoesNotExist()
+            scenario.onActivity { model.importRatings() }
             compose.waitUntil(10_000) { !model.ratingImport.value.running && model.library.value.data.ratings[songs[0].uri] == 5 }
             assertEquals(listOf(songs[0]), playlistSongs(smart, songs, model.library.value.data.ratings))
             assertArrayEquals("Import must not modify music or artwork", before, rated.readBytes())

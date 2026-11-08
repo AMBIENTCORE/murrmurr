@@ -20,13 +20,37 @@ class VisualThemeTest {
     }
 
     @Test fun enabledTextMaintainsReadableContrastAcrossPlayerPalette() {
-        val pairs = listOf(Ink to Lime, Ink to Pink, Ink to Cyan, Ink to Paper,
-            Paper to Surface, Muted to Surface, Paper to InputSurface, Muted to InputSurface,
-            Lime to Ink, Cyan to Surface)
-        pairs.forEach { (text, background) ->
-            val ratio = contrast(text, background)
-            assertTrue("Text contrast must be at least 4.5:1; got $ratio", ratio >= 4.5f)
+        AppTheme.entries.forEach { theme ->
+            val colors = theme.colorScheme
+            val pairs = listOf(colors.onPrimary to colors.primary, colors.onSecondary to colors.secondary,
+                colors.onTertiary to colors.tertiary, colors.onBackground to colors.background,
+                colors.onSurface to colors.surface, colors.onSurfaceVariant to colors.surface,
+                colors.onSurface to theme.inputSurface, colors.onSurfaceVariant to theme.inputSurface,
+                colors.primary to colors.background, colors.tertiary to colors.surface,
+                colors.onPrimaryContainer to colors.primaryContainer,
+                colors.onSecondaryContainer to colors.secondaryContainer, colors.onError to colors.error)
+            pairs.forEach { (text, background) ->
+                val ratio = contrast(text, background)
+                assertTrue("${theme.label} text contrast must be at least 4.5:1; got $ratio", ratio >= 4.5f)
+            }
         }
+    }
+
+    @Test fun cinderUsesGreySurfacesAndTheLogoCreamAccent() {
+        val colors = AppTheme.CINDER.colorScheme
+        assertEquals(Color(0xFFFFECD1), colors.primary)
+        listOf(colors.background, colors.surface, colors.surfaceContainerLowest, colors.surfaceContainerLow,
+            colors.surfaceContainer, colors.surfaceContainerHigh, colors.surfaceContainerHighest,
+            colors.onSurface, colors.onSurfaceVariant, AppTheme.CINDER.inputSurface).forEach { color ->
+            assertEquals(color.red, color.green, 0f)
+            assertEquals(color.red, color.blue, 0f)
+        }
+    }
+
+    @Test fun defaultThemeRemainsTheFirstChoiceWithTheExistingPalette() {
+        assertEquals(AppTheme.DEFAULT, AppTheme.entries.first())
+        assertEquals(PlayerColors, AppTheme.DEFAULT.colorScheme)
+        assertEquals(Color(0xFF1E2340), AppTheme.DEFAULT.inputSurface)
     }
 
     private fun contrast(first: Color, second: Color): Float {

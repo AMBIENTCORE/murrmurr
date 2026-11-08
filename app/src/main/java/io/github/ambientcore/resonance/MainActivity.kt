@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import android.content.Intent
 import android.util.Base64
 import android.util.Log
+import android.graphics.drawable.ColorDrawable
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -13,6 +14,9 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.runtime.SideEffect
+import androidx.compose.ui.graphics.toArgb
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 class MainActivity : ComponentActivity() {
     private val model: MusicViewModel by viewModels()
@@ -22,11 +26,21 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge(SystemBarStyle.dark(0xFF160C24.toInt()), SystemBarStyle.dark(0xFF160C24.toInt()))
-        setContent { MurrmurrApp(model, ::requestMusicAccess) }
+        applyWindowTheme(model.theme.value)
+        setContent {
+            val theme = model.theme.collectAsStateWithLifecycle().value
+            SideEffect { applyWindowTheme(theme) }
+            MurrmurrApp(model, ::requestMusicAccess)
+        }
         consumePlaylistTransfer(intent)
         val audio = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_AUDIO else Manifest.permission.READ_EXTERNAL_STORAGE
         if (savedInstanceState == null && checkSelfPermission(audio) != PackageManager.PERMISSION_GRANTED) requestMusicAccess()
+    }
+
+    private fun applyWindowTheme(theme: AppTheme) {
+        val background = theme.colorScheme.background.toArgb()
+        enableEdgeToEdge(SystemBarStyle.dark(background), SystemBarStyle.dark(background))
+        window.setBackgroundDrawable(ColorDrawable(background))
     }
 
     override fun onNewIntent(intent: Intent) {

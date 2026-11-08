@@ -23,6 +23,8 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
@@ -65,7 +67,8 @@ private data class Collection(val name: String, val subtitle: String, val songs:
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MurrmurrApp(model: MusicViewModel, requestPermission: () -> Unit) {
-    MaterialTheme(colorScheme = PlayerColors, typography = Typography()) {
+    val theme by model.theme.collectAsStateWithLifecycle()
+    MurrmurrTheme(theme) {
         val appName = stringResource(R.string.app_name)
         val library by model.library.collectAsStateWithLifecycle()
         val source by model.source.collectAsStateWithLifecycle()
@@ -106,6 +109,7 @@ fun MurrmurrApp(model: MusicViewModel, requestPermission: () -> Unit) {
         }
         CompositionLocalProvider(LocalBrowseSource provides if (source == LibrarySource.SERVER) "server:${server.key}:" else "") {
         Scaffold(
+            modifier = Modifier.testTag("player-root"),
             containerColor = Ink,
             contentColor = Paper,
             snackbarHost = { SnackbarHost(snackbar) },
@@ -840,14 +844,32 @@ private fun NowPlaying(model: MusicViewModel, modifier: Modifier, close: () -> U
 
 @Composable
 private fun Settings(model: MusicViewModel, data: LibraryData, permission: () -> Unit, folder: () -> Unit, equalizer: () -> Unit) {
+    val theme by model.theme.collectAsStateWithLifecycle()
     val source by model.source.collectAsStateWithLifecycle()
     val server by model.server.collectAsStateWithLifecycle()
-    val audio by model.audio.collectAsStateWithLifecycle()
     val ratingImport by model.ratingImport.collectAsStateWithLifecycle()
     val library by model.library.collectAsStateWithLifecycle()
     var confirmClearHistory by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp).padding(bottom = 36.dp)) {
         Text("Settings", fontSize = 25.sp, fontWeight = FontWeight.Bold)
+        Text("Themes", Modifier.padding(top = 16.dp), fontSize = 19.sp, fontWeight = FontWeight.SemiBold)
+        Column(Modifier.fillMaxWidth().selectableGroup()) {
+            AppTheme.entries.forEach { option ->
+                Row(Modifier.fillMaxWidth().selectable(selected = theme == option,
+                    onClick = { model.setTheme(option) }, role = Role.RadioButton)
+                    .testTag("theme-${option.name.lowercase()}").padding(vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    RadioButton(selected = theme == option, onClick = null)
+                    Text(option.label, Modifier.weight(1f).padding(start = 8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        listOf(option.colorScheme.primary, option.colorScheme.secondary, option.colorScheme.background).forEach { color ->
+                            Box(Modifier.size(18.dp).clip(RoundedCornerShape(4.dp)).background(color)
+                                .border(1.dp, option.colorScheme.outline, RoundedCornerShape(4.dp)))
+                        }
+                    }
+                }
+            }
+        }
         Text("Server", Modifier.padding(top = 16.dp), fontSize = 19.sp, fontWeight = FontWeight.SemiBold)
         Text(if (server.configured) "${server.url}\n${server.data.songs.size} cached tracks / updated ${playedAtLabel(server.updated.takeIf { it > 0 })}"
             else "No Navidrome server configured", color = Muted, fontSize = 12.sp, lineHeight = 18.sp)
@@ -856,22 +878,15 @@ private fun Settings(model: MusicViewModel, data: LibraryData, permission: () ->
             TextButton(onClick = model::refreshServer, enabled = !server.refreshing) { Text("Refresh server library") }
             TextButton(onClick = model::clearServerCache, enabled = !server.refreshing) { Text("Clear server catalog cache") }
         }
-        Text("Connect Tailscale on the R4 and NAS when using the server's Tailscale address. Streaming requires connectivity; cached metadata does not make audio available offline.",
+        Text("Connect Tailscale on your Android device and NAS when using the server's Tailscale address. Streaming requires connectivity; cached metadata does not make audio available offline.",
             color = Muted, fontSize = 11.sp, lineHeight = 16.sp)
         server.error?.let { Text(it, color = Pink, fontSize = 11.sp) }
-        Text("Audio output", Modifier.padding(top = 16.dp), fontSize = 19.sp, fontWeight = FontWeight.SemiBold)
-        TextButton(onClick = equalizer, modifier = Modifier.testTag("settings-equalizer")) { Icon(Icons.Rounded.Equalizer, "Open equalizer", Modifier.size(20.dp)); Spacer(Modifier.width(8.dp)); Text("Equalizer") }
-        Text(if (audio.equalizer.enabled) "EQ enabled / ${audio.equalizer.preset}" else "EQ disabled", color = Muted, fontSize = 12.sp)
-        Text("Floating-point processing preserves automatic sample rate and supported source precision. EQ is optional and off by default. Enable it and choose a preset or adjust its bands in Equalizer. No normalization or quality selector.",
-            color = Muted, fontSize = 12.sp, lineHeight = 18.sp, modifier = Modifier.padding(top = 8.dp))
-        Text("Source: ${audio.audioInfo.ifBlank { "No track prepared" }}", color = Lime, fontSize = 12.sp, modifier = Modifier.padding(top = 12.dp))
-        Text("AudioTrack: ${audio.outputInfo.ifBlank { "Play a track to measure" }}", color = Lime, fontSize = 12.sp, modifier = Modifier.padding(vertical = 8.dp))
-        Text(audio.explanation, color = Muted, fontSize = 12.sp, lineHeight = 18.sp)
-        Text("This reports app output to Android, not a measurement of the DAC. Decoder, firmware and output route can still convert audio.", color = Muted, fontSize = 11.sp, lineHeight = 17.sp)
-        HorizontalDivider(Modifier.padding(vertical = 16.dp), color = Pink)
-        HorizontalDivider(Modifier.padding(vertical = 18.dp), color = Cyan)
+        Column(Modifier.testTag("settings-audio-output")) {
+            Text("Audio output", Modifier.padding(top = 16.dp), fontSize = 19.sp, fontWeight = FontWeight.SemiBold)
+            TextButton(onClick = equalizer, modifier = Modifier.testTag("settings-equalizer")) { Icon(Icons.Rounded.Equalizer, "Open equalizer", Modifier.size(20.dp)); Spacer(Modifier.width(8.dp)); Text("Equalizer") }
+        }
         if (source == LibrarySource.LOCAL) {
-        Text("Library", fontSize = 19.sp, fontWeight = FontWeight.Bold)
+        Text("Library", Modifier.padding(top = 16.dp), fontSize = 19.sp, fontWeight = FontWeight.Bold)
         Text("${data.songs.size} indexed tracks / ${data.folders.size} selected folders", color = Muted, fontSize = 12.sp)
         TextButton(onClick = folder) { Icon(Icons.Rounded.CreateNewFolder, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text("Add music folder") }
         TextButton(onClick = permission) { Text("Grant device music access") }
@@ -880,27 +895,10 @@ private fun Settings(model: MusicViewModel, data: LibraryData, permission: () ->
         }
         library.lastScan?.let { Text(it.summary, color = Lime, fontSize = 11.sp) }
         Text("New-track scans query Android's index changes without walking folders or opening audio files. Android must index newly copied files first. Deep scan checks selected folders for unindexed files and is slower. Refresh reconciles tags and deleted files; offline cards remain cached.", color = Muted, fontSize = 12.sp, lineHeight = 18.sp)
-        HorizontalDivider(Modifier.padding(vertical = 18.dp), color = Surface)
-        Text("Embedded ratings", fontSize = 19.sp, fontWeight = FontWeight.Bold)
-        Text("Read-only MusicBee-compatible tags: MP3 POPM, FLAC/Ogg RATING percentages, MP4 rate/freeform RATING percentages, and WAV ID3. Local ratings, including manual clears, take priority. Database-only PC ratings are not accessible.",
-            color = Muted, fontSize = 12.sp, lineHeight = 18.sp, modifier = Modifier.padding(top = 8.dp))
-        TextButton(onClick = { model.importRatings() }, enabled = !ratingImport.running && !library.scanning && !library.loading) {
-            Text("Import embedded ratings")
-        }
-        TextButton(onClick = { model.importRatings(force = true) }, enabled = !ratingImport.running && !library.scanning && !library.loading) {
-            Text("Re-read unchanged rating tags")
-        }
-        if (ratingImport.running) {
-            Text(ratingImport.progress, color = Lime, fontSize = 12.sp)
-            TextButton(onClick = model::cancelRatingImport) { Text("Stop rating import") }
-        }
-        if (ratingImport.result.isNotBlank()) Text(ratingImport.result, color = Muted, fontSize = 12.sp, lineHeight = 18.sp)
-        Text("Normal imports skip unchanged files. Use re-read if PC software preserves file dates and sizes. The first import opens supported files to read metadata; scans and startup remain index-only.",
-            color = Muted, fontSize = 11.sp, lineHeight = 17.sp)
         }
         HorizontalDivider(Modifier.padding(vertical = 18.dp), color = Surface)
         Text("Listening history", fontSize = 19.sp, fontWeight = FontWeight.Bold)
-        Text("Stats shows device-recorded qualified plays for the selected source. A play counts after 30 seconds, or half of tracks shorter than one minute. Seeking and paused time do not count. History is not uploaded.",
+        Text("Plays count after 30 seconds, or half the duration for tracks under one minute.",
             color = Muted, fontSize = 12.sp, lineHeight = 18.sp, modifier = Modifier.padding(top = 8.dp))
         TextButton(onClick = { confirmClearHistory = true }) { Text("Clear play history and counts") }
         Spacer(Modifier.height(24.dp))
