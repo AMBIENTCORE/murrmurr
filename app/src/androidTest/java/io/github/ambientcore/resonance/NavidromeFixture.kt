@@ -38,6 +38,8 @@ class NavidromeFixture(private val audio: ByteArray, private val artwork: ByteAr
         .put("album", "Server Album").put("albumId", "album-1").put("duration", 30).put("suffix", "wav")
         .put("path", "Server Artist/Server Album/$index.wav").put("coverArt", "cover-1")
         .put("bitDepth", 16).put("size", audio.size).put("created", "2026-11-01T12:00:00Z")
+        .put("bitRate", 705).put("catalogNumber", "SERVER-CAT-1")
+        .put("year", 0).put("releaseDate", JSONObject().put("year", 2026))
         .put("genre", "Ambient; Electronic").put("userRating", synchronized(ratings) { ratings["id-$index"] ?: 0 })
         .apply { if (synchronized(favorites) { "id-$index" in favorites }) put("starred", "2026-11-01T12:00:00Z") }
 

@@ -18,6 +18,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
@@ -26,6 +28,7 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.sp
 
 enum class BrowseMode(val label: String, val columns: Int = 1) {
@@ -98,8 +101,16 @@ fun ViewModeMenu(scope: String, mode: BrowseMode, change: (BrowseMode) -> Unit, 
 fun BrowseGrid(mode: BrowseMode, modifier: Modifier = Modifier, state: LazyGridState = rememberLazyGridState(),
     contentPadding: PaddingValues = PaddingValues(bottom = 16.dp), columns: Int = mode.columns,
     content: LazyGridScope.() -> Unit) {
-    LazyVerticalGrid(columns = GridCells.Fixed(columns), modifier = modifier,
+    LazyVerticalGrid(columns = remember(columns) { ResponsiveGridCells(columns) }, modifier = modifier,
         state = state, contentPadding = contentPadding, content = content)
+}
+
+private class ResponsiveGridCells(private val columns: Int) : GridCells {
+    override fun Density.calculateCrossAxisCellSizes(availableSize: Int, spacing: Int): List<Int> {
+        val cells = if (columns > 1 && availableSize >= 600.dp.roundToPx()) GridCells.Adaptive(400.dp / columns)
+            else GridCells.Fixed(columns)
+        return with(cells) { calculateCrossAxisCellSizes(availableSize, spacing) }
+    }
 }
 
 fun albumGridColumns(mode: BrowseMode): Int = when (mode) {
@@ -118,6 +129,7 @@ fun BrowseItem(title: String, subtitle: String, mode: BrowseMode, modifier: Modi
     leading: @Composable () -> Unit = {}, badges: @Composable () -> Unit = {},
     actions: @Composable () -> Unit = {}, denseArtwork: Boolean = false) {
     val compact = mode == BrowseMode.COMPACT
+    val wide = with(LocalDensity.current) { LocalWindowInfo.current.containerSize.width >= 600.dp.roundToPx() }
     val clickable = if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier
     @Composable fun cover(modifier: Modifier) {
         if (icon == null) Artwork(song, modifier.testTag("browse-artwork"))
@@ -147,12 +159,12 @@ fun BrowseItem(title: String, subtitle: String, mode: BrowseMode, modifier: Modi
             Row(verticalAlignment = Alignment.CenterVertically) { badges() }
         }
     } else CompositionLocalProvider(
-        LocalBrowseActionSize provides if (compact) 28.dp else 36.dp,
+        LocalBrowseActionSize provides if (wide) 48.dp else if (compact) 28.dp else 36.dp,
         LocalTextStyle provides LocalTextStyle.current.copy(lineHeight = 14.sp),
     ) {
         Row(modifier.fillMaxWidth().then(clickable)
             .padding(start = 22.dp, end = 8.dp, top = if (compact) 0.dp else 2.dp, bottom = if (compact) 0.dp else 2.dp)
-            .heightIn(min = if (compact) 32.dp else 36.dp), verticalAlignment = Alignment.CenterVertically) {
+            .heightIn(min = if (wide) 48.dp else if (compact) 32.dp else 36.dp), verticalAlignment = Alignment.CenterVertically) {
             leading()
             if (mode.artwork) { cover(Modifier.size(40.dp)); Spacer(Modifier.width(12.dp)) }
             Column(Modifier.weight(1f).padding(end = 8.dp)) {

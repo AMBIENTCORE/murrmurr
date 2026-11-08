@@ -39,7 +39,7 @@ private object ArtworkCache {
     val slots = Semaphore(2)
 
     suspend fun load(context: Context, song: Song): Bitmap? = withContext(Dispatchers.IO) {
-        val cacheKey = if (song.isServer) "${song.uri}:${song.coverArtId}" else song.uri
+        val cacheKey = if (song.isServer) "${song.uri}:${song.coverArtId}:1024" else song.uri
         images[cacheKey]?.let { return@withContext it }
         if (cacheKey in missing) return@withContext null
         slots.withPermit {
@@ -53,7 +53,7 @@ private object ArtworkCache {
                     check(folder.isDirectory || folder.mkdirs()) { "Cannot create artwork cache" }
                     val file = File(folder, sha256(cacheKey) + ".image")
                     val bytes = if (file.exists()) file.readBytes() else NavidromeClient(account)
-                        .bytes("getCoverArt", mapOf("id" to song.coverArtId, "size" to "384"), 4 * 1024 * 1024)
+                        .bytes("getCoverArt", mapOf("id" to song.coverArtId, "size" to "1024"), 4 * 1024 * 1024)
                     val bitmap = decodeArtwork(bytes) ?: throw ServerFailure("Server returned invalid artwork")
                     if (!file.exists()) file.writeBytes(bytes)
                     file.setLastModified(System.currentTimeMillis())
@@ -95,7 +95,7 @@ private fun decodeArtwork(bytes: ByteArray): Bitmap? {
     BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
     val options = BitmapFactory.Options().apply {
         inSampleSize = 1
-        while (bounds.outWidth / inSampleSize > 768 || bounds.outHeight / inSampleSize > 768) inSampleSize *= 2
+        while (bounds.outWidth / inSampleSize > 1024 || bounds.outHeight / inSampleSize > 1024) inSampleSize *= 2
     }
     return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
 }

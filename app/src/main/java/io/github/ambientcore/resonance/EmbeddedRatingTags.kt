@@ -10,8 +10,11 @@ import java.nio.charset.Charset
 import java.util.Locale
 import kotlin.math.roundToInt
 
+data class EmbeddedTrackMetadata(val year: String = "", val catalogNumber: String = "")
+
 object EmbeddedRatingTags {
     val extensions = setOf("MP3", "FLAC", "OGG", "OPUS", "M4A", "MP4", "WAV")
+    val metadataExtensions = setOf("MP3", "FLAC", "OGG", "OPUS", "WAV")
     private const val MAX_TAG = 64L * 1024 * 1024
     private const val MAX_PACKET = 8 * 1024 * 1024
 
@@ -25,6 +28,29 @@ object EmbeddedRatingTags {
             "WAV" -> wave(data)
             else -> throw IOException("Unsupported rating-tag format: $extension")
         }
+    }
+
+    fun readMetadata(input: InputStream, extension: String): EmbeddedTrackMetadata {
+        val values = mutableMapOf<String, MutableList<String>>()
+        val fields: (String, String) -> Unit = { key, value ->
+            val normalized = key.uppercase(Locale.ROOT).filter(Char::isLetterOrDigit)
+            if (normalized in setOf("YEAR", "DATE", "ORIGINALYEAR", "ORIGINALDATE", "CATALOGNUMBER",
+                    "CATALOGNO", "CATALOG", "CATALOGUENUMBER", "CATALOGUENO")) {
+                values.getOrPut(normalized) { mutableListOf() }.add(value.trim('\u0000', '\uFEFF', ' ', '\r', '\n'))
+            }
+        }
+        val data = DataInputStream(input.buffered(16 * 1024))
+        when (extension.uppercase(Locale.ROOT)) {
+            "MP3" -> id3(data, fields)
+            "FLAC" -> flac(data, fields)
+            "OGG", "OPUS" -> ogg(data, fields)
+            "WAV" -> wave(data, fields)
+            else -> throw IOException("Unsupported metadata-tag format: $extension")
+        }
+        val years = listOf("DATE", "YEAR", "ORIGINALDATE", "ORIGINALYEAR").flatMap { values[it].orEmpty() }
+        val catalogs = listOf("CATALOGNUMBER", "CATALOGNO", "CATALOG", "CATALOGUENUMBER", "CATALOGUENO")
+            .flatMap { values[it].orEmpty() }
+        return EmbeddedTrackMetadata(taggedYear(*years.toTypedArray()), catalogs.firstOrNull { it.isNotBlank() }.orEmpty())
     }
 
     fun popmStars(value: Int): Int {
@@ -48,7 +74,7 @@ object EmbeddedRatingTags {
         return (value / 20).roundToInt().coerceIn(0, 5)
     }
 
-    private fun id3(data: DataInputStream): Int? {
+    private fun id3(data: DataInputStream, fields: ((String, String) -> Unit)? = null): Int? {
         val header = data.prefix(10)
         if (header.size < 3 || String(header, 0, 3, Charsets.ISO_8859_1) != "ID3") return null
         if (header.size != 10) throw EOFException("Truncated ID3 header")
@@ -62,12 +88,13 @@ object EmbeddedRatingTags {
         if (unsync && version < 4) {
             if (size > MAX_PACKET) throw IOException("Unsynchronised ID3 metadata exceeds 8 MiB")
             val decoded = deUnsync(data.bytes(size.toInt()))
-            return id3Frames(DataInputStream(ByteArrayInputStream(decoded)), decoded.size.toLong(), version, flags, false)
+            return id3Frames(DataInputStream(ByteArrayInputStream(decoded)), decoded.size.toLong(), version, flags, false, fields)
         }
-        return id3Frames(data, size, version, flags, unsync)
+        return id3Frames(data, size, version, flags, unsync, fields)
     }
 
-    private fun id3Frames(data: DataInputStream, length: Long, version: Int, flags: Int, tagUnsync: Boolean): Int? {
+    private fun id3Frames(data: DataInputStream, length: Long, version: Int, flags: Int, tagUnsync: Boolean,
+        fields: ((String, String) -> Unit)? = null): Int? {
         var left = length
         if (version >= 3 && flags and 0x40 != 0) {
             if (left < 4) throw IOException("Truncated ID3 extended header")
@@ -96,7 +123,9 @@ object EmbeddedRatingTags {
             }.toLong()
             if (size < 0 || size > left) throw IOException("Invalid ID3 frame length")
             left -= size
-            if (id !in setOf("POPM", "POP", "TXXX", "TXX")) { data.skipExact(size); continue }
+            val yearFrame = fields != null && id in setOf("TYER", "TYE", "TDRC", "TORY", "TOR", "TDOR")
+            if (fields != null && id in setOf("POPM", "POP")) { data.skipExact(size); continue }
+            if (!yearFrame && id !in setOf("POPM", "POP", "TXXX", "TXX")) { data.skipExact(size); continue }
             if (size > 65536) throw IOException("Oversized rating frame")
             val frameFlags = if (version == 2) 0 else ((header[8].toInt() and 255) shl 8) or (header[9].toInt() and 255)
             val encoded = if (version == 4) frameFlags and 0x0c != 0 else frameFlags and 0xc0 != 0
@@ -129,14 +158,21 @@ object EmbeddedRatingTags {
                     else -> throw IOException("Unknown text rating encoding")
                 }
                 val text = decode(payload.copyOfRange(1, payload.size), charset)
-                val fields = text.split('\u0000', limit = 2)
-                if (fields.size == 2 && fields[0].trim().equals("RATING", true)) textRating = fields[1]
+                if (yearFrame) {
+                    fields?.invoke(if (id in setOf("TORY", "TOR", "TDOR")) "ORIGINALYEAR" else "YEAR", text)
+                } else {
+                    val parts = text.split('\u0000', limit = 2)
+                    if (parts.size == 2) {
+                        fields?.invoke(parts[0], parts[1])
+                        if (fields == null && parts[0].trim().equals("RATING", true)) textRating = parts[1]
+                    }
+                }
             }
         }
         return rating ?: textRating?.let(::percentageStars)
     }
 
-    private fun flac(data: DataInputStream): Int? {
+    private fun flac(data: DataInputStream, fields: ((String, String) -> Unit)? = null): Int? {
         if (data.ascii(4) != "fLaC") throw IOException("Invalid FLAC header")
         var total = 0L
         repeat(512) {
@@ -145,7 +181,7 @@ object EmbeddedRatingTags {
             total += size + 4
             if (total > MAX_TAG) throw IOException("FLAC metadata exceeds 64 MiB")
             val section = LimitedInput(data, size.toLong())
-            val rating = if (type and 127 == 4) comments(DataInputStream(section)) else null
+            val rating = if (type and 127 == 4) comments(DataInputStream(section), fields) else null
             if (rating != null) return rating
             DataInputStream(section).skipExact(section.remaining)
             if (type and 128 != 0) return null
@@ -153,7 +189,7 @@ object EmbeddedRatingTags {
         throw IOException("Too many FLAC metadata blocks")
     }
 
-    private fun comments(data: DataInputStream): Int? {
+    private fun comments(data: DataInputStream, fields: ((String, String) -> Unit)? = null): Int? {
         val vendor = data.le32()
         if (vendor > MAX_TAG) throw IOException("Oversized Vorbis vendor")
         data.skipExact(vendor)
@@ -166,7 +202,8 @@ object EmbeddedRatingTags {
             val prefix = data.bytes(minOf(size, 128).toInt())
             data.skipExact(size - prefix.size)
             val text = String(prefix, Charsets.UTF_8)
-            if (text.startsWith("RATING=", true)) {
+            if (fields != null && '=' in text) fields(text.substringBefore('='), text.substringAfter('='))
+            if (fields == null && text.startsWith("RATING=", true)) {
                 if (size > 128) throw IOException("Oversized RATING value")
                 val value = percentageStars(text.substringAfter('='))
                 if (rating != null && rating != value) throw IOException("Conflicting RATING tags")
@@ -176,7 +213,7 @@ object EmbeddedRatingTags {
         return rating
     }
 
-    private fun ogg(data: DataInputStream): Int? {
+    private fun ogg(data: DataInputStream, fields: ((String, String) -> Unit)? = null): Int? {
         val packet = ByteArrayOutputStream()
         var packets = 0
         var total = 0
@@ -195,7 +232,7 @@ object EmbeddedRatingTags {
                     val prefix = String(bytes, 0, minOf(8, bytes.size), Charsets.ISO_8859_1)
                     if (prefix.startsWith("OpusTags") || prefix.startsWith("\u0003vorbis")) {
                         val offset = if (prefix.startsWith("OpusTags")) 8 else 7
-                        return comments(DataInputStream(ByteArrayInputStream(bytes, offset, bytes.size - offset)))
+                        return comments(DataInputStream(ByteArrayInputStream(bytes, offset, bytes.size - offset)), fields)
                     }
                     packet.reset()
                     if (++packets >= 3) return null
@@ -205,7 +242,7 @@ object EmbeddedRatingTags {
         throw IOException("Ogg headers are too large")
     }
 
-    private fun wave(data: DataInputStream): Int? {
+    private fun wave(data: DataInputStream, fields: ((String, String) -> Unit)? = null): Int? {
         if (data.ascii(4) != "RIFF") throw IOException("Unsupported WAV container")
         var left = data.le32() - 4
         if (left < 0) throw IOException("Invalid RIFF length")
@@ -215,7 +252,7 @@ object EmbeddedRatingTags {
             val size = data.le32()
             left -= 8
             if (size > left) throw IOException("Invalid WAV chunk length")
-            if (type.equals("id3 ", true)) return id3(DataInputStream(LimitedInput(data, size)))
+            if (type.equals("id3 ", true)) return id3(DataInputStream(LimitedInput(data, size)), fields)
             data.skipExact(size + size % 2)
             left -= size + size % 2
         }

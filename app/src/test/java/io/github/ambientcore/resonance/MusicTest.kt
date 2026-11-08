@@ -8,6 +8,23 @@ class MusicTest {
         fileName = "01.flac", path = "/storage/emulated/0/Music/01.flac", duration = 65_000)
     private val second = Song("content://music/2", "Second", "Other Artist", "Two", track = 1, fileName = "02.mp3")
 
+    @Test fun formatLabelOnlyShowsFileTypeAndAvailableBitrate() {
+        assertEquals("FLAC / 960 kbps", trackFormatLabel(first.copy(bitrate = 960_000)))
+        assertEquals("FLAC", trackFormatLabel(first))
+        assertEquals("MP3 / 320 kbps", trackFormatLabel(second, "MPEG", 320_000))
+        assertEquals("AAC / 256 kbps", trackFormatLabel(first.copy(fileName = ""), "AAC", 256_000))
+        assertEquals("", trackFormatLabel(first.copy(fileName = ""), bitrate = -1))
+    }
+
+    @Test fun yearTagsAcceptDatesAndFallBackFromMissingIndexYears() {
+        assertEquals("2026", taggedYear(null, "0", "2026"))
+        assertEquals("2024", taggedYear("", "0000", "2024-03-27"))
+        assertEquals("1999", taggedYear(" 1999/12/31 "))
+        assertEquals("2001", taggedYear("unknown", "2001-01-01T00:00:00Z"))
+        assertEquals("1980", taggedYear("1980", "2026"))
+        assertEquals("", taggedYear(null, "0", "0000", "Unknown", "999", "12345"))
+    }
+
     @Test fun durationFormattingHandlesHoursAndNegativeValues() {
         assertEquals("0:00", durationLabel(-1))
         assertEquals("1:05", durationLabel(65_000))

@@ -182,7 +182,7 @@ class LibraryRepository(private val context: Context, fileName: String = "librar
     private fun scanMediaStore(volume: String, after: Long?, through: Long): List<Song> {
         val collection = MediaStore.Audio.Media.getContentUri(volume)
         val projection = arrayOf("_id", "title", "artist", "album", "album_artist", "genre", "year", "track", "duration",
-            "relative_path", "_display_name", "_data", "date_modified", "_size")
+            "relative_path", "_display_name", "_data", "date_modified", "_size", "bitrate")
         val selection = "is_music != 0 AND is_pending = 0 AND generation_modified <= ?" +
             if (after != null) " AND generation_modified > ?" else ""
         val args = if (after != null) arrayOf(through.toString(), after.toString()) else arrayOf(through.toString())
@@ -196,10 +196,11 @@ class LibraryRepository(private val context: Context, fileName: String = "librar
                         artist = cursor.text("artist").known("Unknown artist"),
                         album = cursor.text("album").known("Unknown album"),
                         albumArtist = cursor.text("album_artist").ifBlank { cursor.text("artist").known("Unknown artist") },
-                        genre = cursor.text("genre"), year = cursor.text("year"), track = number % 1000, disc = number / 1000,
+                        genre = cursor.text("genre"), year = taggedYear(cursor.text("year")), track = number % 1000, disc = number / 1000,
                         duration = cursor.long("duration"), folder = cursor.text("relative_path").trimEnd('/').ifBlank { "Internal storage" },
                         fileName = cursor.text("_display_name"), path = cursor.text("_data"),
                         modified = cursor.long("date_modified") * 1000, size = cursor.long("_size"), mediaVolume = volume,
+                        bitrate = cursor.long("bitrate").toInt(),
                     ))
                 }
             }
@@ -250,12 +251,14 @@ class LibraryRepository(private val context: Context, fileName: String = "librar
                             title = tag(MediaMetadataRetriever.METADATA_KEY_TITLE).ifBlank { name.substringBeforeLast('.') },
                             artist = artist, album = tag(MediaMetadataRetriever.METADATA_KEY_ALBUM).ifBlank { "Unknown album" },
                             albumArtist = tag(MediaMetadataRetriever.METADATA_KEY_ALBUMARTIST).ifBlank { artist },
-                            genre = tag(MediaMetadataRetriever.METADATA_KEY_GENRE), year = tag(MediaMetadataRetriever.METADATA_KEY_YEAR),
+                            genre = tag(MediaMetadataRetriever.METADATA_KEY_GENRE),
+                            year = taggedYear(tag(MediaMetadataRetriever.METADATA_KEY_YEAR), tag(MediaMetadataRetriever.METADATA_KEY_DATE)),
                             track = tag(MediaMetadataRetriever.METADATA_KEY_CD_TRACK_NUMBER).substringBefore('/').toIntOrNull() ?: 0,
                             disc = tag(MediaMetadataRetriever.METADATA_KEY_DISC_NUMBER).substringBefore('/').toIntOrNull() ?: 0,
                             duration = tag(MediaMetadataRetriever.METADATA_KEY_DURATION).toLongOrNull() ?: 0,
                             folder = id.substringAfter(':').substringBeforeLast('/', "Selected folder"),
                             fileName = name, path = path, modified = modified, size = size,
+                            bitrate = tag(MediaMetadataRetriever.METADATA_KEY_BITRATE).toIntOrNull() ?: 0,
                         )
                     } finally { metadata.release() }
                 } catch (error: Exception) {
@@ -276,6 +279,7 @@ class LibraryRepository(private val context: Context, fileName: String = "librar
             .put("modified", song.modified).put("size", song.size).put("mediaVolume", song.mediaVolume)
             .put("serverKey", song.serverKey).put("serverTrackId", song.serverTrackId).put("coverArtId", song.coverArtId)
             .put("serverAlbumId", song.serverAlbumId).put("sourceBits", song.sourceBits)
+            .put("catalogNumber", song.catalogNumber).put("bitrate", song.bitrate)
 
         fun songFromJson(json: JSONObject): Song = Song(
             json.getString("uri"), json.getString("title"), json.optString("artist", "Unknown artist"),
@@ -285,6 +289,7 @@ class LibraryRepository(private val context: Context, fileName: String = "librar
             json.optLong("modified"), json.optLong("size"), json.optString("mediaVolume"),
             json.optString("serverKey"), json.optString("serverTrackId"), json.optString("coverArtId"),
             json.optString("serverAlbumId"), json.optInt("sourceBits"),
+            json.optString("catalogNumber"), json.optInt("bitrate"),
         )
 
         private fun documentPath(id: String): String {

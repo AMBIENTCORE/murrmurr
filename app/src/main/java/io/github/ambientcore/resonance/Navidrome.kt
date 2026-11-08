@@ -200,12 +200,14 @@ class NavidromeClient(val account: ServerAccount) {
             catch (_: java.time.format.DateTimeParseException) { throw ServerFailure("Server returned an invalid track date") }
         return Song(serverTrackUri(account.key, id), json.getString("title"), artist, album,
             json.optString("albumArtist", artist), genres?.joinToString("; ") ?: json.optString("genre"),
-            json.optString("year"), json.optInt("track"), json.optInt("discNumber"),
+            taggedYear(json.optString("year"), json.optJSONObject("releaseDate")?.optString("year"),
+                json.optJSONObject("originalReleaseDate")?.optString("year")), json.optInt("track"), json.optInt("discNumber"),
             json.optLong("duration") * 1000, folder = "$artist/$album",
             fileName = json.optString("path").substringAfterLast('/').ifBlank { "$id.${json.optString("suffix")}" },
             modified = timestamp, size = json.optLong("size"), mediaVolume = "server",
             serverKey = account.key, serverTrackId = id, coverArtId = json.optString("coverArt"),
-            serverAlbumId = json.optString("albumId"), sourceBits = json.optInt("bitDepth"))
+            serverAlbumId = json.optString("albumId"), sourceBits = json.optInt("bitDepth"),
+            catalogNumber = json.optString("catalogNumber"), bitrate = json.optInt("bitRate") * 1000)
     }
 }
 

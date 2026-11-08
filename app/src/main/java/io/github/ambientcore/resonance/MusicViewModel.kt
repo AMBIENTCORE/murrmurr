@@ -69,6 +69,11 @@ data class AudioUi(
     val sourceNote: String = "",
     val equalizer: EqualizerSettings = EqualizerSettings(),
     val outputSampleRate: Int = 0,
+    val sourceUri: String = "",
+    val sourceCodec: String = "",
+    val sourceBitrate: Int = 0,
+    val catalogNumber: String = "",
+    val sourceYear: String = "",
 ) {
     val explanation: String get() = sourceNote.ifBlank {
         explainAudioPrecision(sourceBits, sourceLossy, outputBits, outputFloating)
@@ -596,6 +601,9 @@ class MusicViewModel(application: Application) : AndroidViewModel(application), 
             prefs.getInt("output_bits", 0), prefs.getBoolean("output_float", false),
             prefs.getString("source_note", "").orEmpty(),
             tone, prefs.getInt("output_sample_rate", 0),
+            prefs.getString("source_uri", "").orEmpty(), prefs.getString("source_codec", "").orEmpty(),
+            prefs.getInt("source_bitrate", 0), prefs.getString("source_catalog_number", "").orEmpty(),
+            prefs.getString("source_year", "").orEmpty(),
         )
     }
 
@@ -756,7 +764,8 @@ class MusicViewModel(application: Application) : AndroidViewModel(application), 
             prefs.getString("error", null)?.let { message(it); prefs.edit().remove("error").apply() }
         } else if (key == THEME_PREF) mutableTheme.value = readTheme()
         else if (key == "history_revision") reloadHistory()
-        else if (key in setOf("audio_info", "output_info", "source_bits", "source_lossy", "output_bits", "output_float", "source_note", "output_sample_rate", EQUALIZER_PREF)) updateAudio()
+        else if (key in setOf("audio_info", "output_info", "source_bits", "source_lossy", "output_bits", "output_float", "source_note", "output_sample_rate",
+                "source_uri", "source_codec", "source_bitrate", "source_catalog_number", "source_year", EQUALIZER_PREF)) updateAudio()
     }
 
     private fun showError(message: String, error: Exception) { Log.e("Resonance", message, error); message("$message: ${error.message}") }

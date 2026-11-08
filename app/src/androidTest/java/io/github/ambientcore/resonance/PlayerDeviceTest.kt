@@ -7,11 +7,16 @@ import android.content.ContentValues
 import android.provider.MediaStore
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.material3.Surface
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.toPixelMap
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Density
@@ -39,7 +44,8 @@ import java.nio.ByteOrder
 @RunWith(AndroidJUnit4::class)
 class PlayerDeviceTest {
     @get:Rule val compose = createEmptyComposeRule()
-    @get:Rule val permission: GrantPermissionRule = GrantPermissionRule.grant(Manifest.permission.READ_EXTERNAL_STORAGE)
+    @get:Rule val permission: GrantPermissionRule = GrantPermissionRule.grant(
+        if (android.os.Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_AUDIO else Manifest.permission.READ_EXTERNAL_STORAGE)
     private val keepTestWindowAwake = ActivityLifecycleCallback { activity, stage ->
         if (stage == Stage.RESUMED && activity.packageName.endsWith(".qa")) {
             activity.window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -270,6 +276,335 @@ class PlayerDeviceTest {
         }
     }
 
+    @Test fun catalogTagsAndBitratesPersistAndDecode() {
+        val song = Song("content://qa/metadata", "Tagged", catalogNumber = "CAT-012", bitrate = 960_000)
+        assertEquals(song, LibraryRepository.songFromJson(LibraryRepository.songToJson(song)))
+        val legacy = LibraryRepository.songToJson(song).apply { remove("catalogNumber"); remove("bitrate") }
+        assertEquals("", LibraryRepository.songFromJson(legacy).catalogNumber)
+        assertEquals(0, LibraryRepository.songFromJson(legacy).bitrate)
+        assertEquals("", catalogNumber(null))
+        assertEquals("CAT-012", catalogNumber(androidx.media3.common.Metadata(
+            androidx.media3.extractor.metadata.vorbis.VorbisComment("CATALOGNUMBER", " CAT-012 "))))
+        assertEquals("ID3-9", catalogNumber(androidx.media3.common.Metadata(
+            androidx.media3.extractor.metadata.id3.TextInformationFrame("TXXX", "Catalog Number", listOf("ID3-9")))))
+        assertEquals("", catalogNumber(androidx.media3.common.Metadata(
+            androidx.media3.extractor.metadata.vorbis.VorbisComment("LABEL", "Not a catalog number"))))
+    }
+
+    @Test fun catalogNumberFollowsDecodedTrackAndClearsOnTransition() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val tagged = File(context.filesDir, "resonance-qa-catalog.mp3")
+        val plain = File(context.filesDir, "resonance-qa-catalog-plain.wav")
+        var scenario: ActivityScenario<MainActivity>? = null
+        try {
+            writeSilentMp3(tagged)
+            writeSilentWave(plain)
+            val payload = byteArrayOf(0) + "CATALOGNUMBER\u0000LIVE-012\u0000".toByteArray()
+            val frame = "TXXX".toByteArray() + ByteBuffer.allocate(4).putInt(payload.size).array() + ByteArray(2) + payload
+            val date = byteArrayOf(0) + "2026-03-27\u0000".toByteArray()
+            val frames = frame + "TDRC".toByteArray() + ByteBuffer.allocate(4).putInt(date.size).array() + ByteArray(2) + date
+            val size = byteArrayOf((frames.size shr 21 and 127).toByte(), (frames.size shr 14 and 127).toByte(),
+                (frames.size shr 7 and 127).toByte(), (frames.size and 127).toByte())
+            tagged.writeBytes("ID3".toByteArray() + byteArrayOf(3, 0, 0) + size + frames + tagged.readBytes())
+            val first = Song(Uri.fromFile(tagged).toString(), "Tagged catalog", year = "0", fileName = tagged.name)
+            val second = Song(Uri.fromFile(plain).toString(), "No catalog", fileName = plain.name)
+            scenario = ActivityScenario.launch(MainActivity::class.java)
+            lateinit var model: MusicViewModel
+            scenario.onActivity { model = ViewModelProvider(it)[MusicViewModel::class.java] }
+            compose.waitUntil(10_000) { model.playing.value.connected }
+            scenario.onActivity { model.play(listOf(first, second)) }
+            compose.waitUntil(10_000) { model.audio.value.sourceUri == first.uri && model.audio.value.catalogNumber == "LIVE-012" &&
+                model.audio.value.sourceYear == "2026" }
+            compose.onNodeWithTag("mini-player").performClick()
+            compose.onNodeWithTag("now-playing-catalog").assertTextEquals("Catalog No. LIVE-012")
+            compose.onNodeWithTag("now-playing-year").assertTextEquals("2026").assertIsDisplayed()
+            scenario.onActivity { model.next() }
+            compose.waitUntil(10_000) { model.audio.value.sourceUri == second.uri && model.audio.value.catalogNumber.isEmpty() &&
+                model.audio.value.sourceYear.isEmpty() }
+            compose.onNodeWithTag("now-playing-catalog").assertDoesNotExist()
+            compose.onNodeWithTag("now-playing-year").assertTextEquals("-")
+        } finally {
+            try { scenario?.close() } finally {
+                context.stopService(android.content.Intent(context, PlaybackService::class.java))
+                check(!tagged.exists() || tagged.delete())
+                check(!plain.exists() || plain.delete())
+            }
+        }
+    }
+
+    @Test fun embeddedYearsHandleVorbisDatesAndId3RecordingYears() {
+        fun vorbis(key: String, value: String) = androidx.media3.extractor.metadata.vorbis.VorbisComment(key, value)
+        fun id3(key: String, value: String) = androidx.media3.extractor.metadata.id3.TextInformationFrame(key, null, listOf(value))
+        assertEquals("", recordingYear(null))
+        assertEquals("2026", recordingYear(androidx.media3.common.Metadata(vorbis("date", "2026"))))
+        assertEquals("2025", recordingYear(androidx.media3.common.Metadata(vorbis("YEAR", "0"), vorbis("DATE", "2025-03-27"))))
+        assertEquals("1998", recordingYear(androidx.media3.common.Metadata(id3("TYER", "1998"))))
+        assertEquals("2024", recordingYear(androidx.media3.common.Metadata(id3("TDRC", "2024-06-01T12:00:00"))))
+        assertEquals("1980", recordingYear(androidx.media3.common.Metadata(vorbis("ORIGINALDATE", "2001"), vorbis("DATE", "1980"))))
+        assertEquals("2001", recordingYear(androidx.media3.common.Metadata(vorbis("ORIGINALDATE", "2001-01-01"))))
+        assertEquals("", recordingYear(androidx.media3.common.Metadata(vorbis("DATE", "unknown"))))
+    }
+
+    @Test fun sameFormatTrackTransitionsKeepSourceMetadata() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val firstFile = File(context.filesDir, "resonance-qa-source-first.wav")
+        val secondFile = File(context.filesDir, "resonance-qa-source-second.wav")
+        var scenario: ActivityScenario<MainActivity>? = null
+        try {
+            writeSilentWave(firstFile)
+            writeSilentWave(secondFile)
+            val first = Song(Uri.fromFile(firstFile).toString(), "First source", year = "2024", fileName = firstFile.name)
+            val second = Song(Uri.fromFile(secondFile).toString(), "Second source", year = "1998", fileName = secondFile.name)
+            scenario = ActivityScenario.launch(MainActivity::class.java)
+            lateinit var model: MusicViewModel
+            scenario.onActivity { model = ViewModelProvider(it)[MusicViewModel::class.java] }
+            compose.waitUntil(10_000) { model.playing.value.connected }
+            scenario.onActivity { model.play(listOf(first, second)) }
+            compose.waitUntil(10_000) { model.audio.value.sourceUri == first.uri && model.audio.value.sourceBits == 16 &&
+                model.audio.value.sourceYear == "2024" }
+            scenario.onActivity { model.next() }
+            compose.waitUntil(10_000) { model.audio.value.sourceUri == second.uri && model.audio.value.sourceBits == 16 &&
+                model.audio.value.sourceYear == "1998" && model.audio.value.sourceBitrate > 0 }
+        } finally {
+            try { scenario?.close() } finally {
+                context.stopService(android.content.Intent(context, PlaybackService::class.java))
+                check(!firstFile.exists() || firstFile.delete())
+                check(!secondFile.exists() || secondFile.delete())
+            }
+        }
+    }
+
+    @Test fun stoppedTracksReadYearAndCatalogWithoutStartingPlayback() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val file = File(context.filesDir, "resonance-qa-stopped-tags.mp3")
+        var scenario: ActivityScenario<MainActivity>? = null
+        try {
+            writeSilentMp3(file)
+            val year = byteArrayOf(0) + "2026\u0000".toByteArray()
+            val catalog = byteArrayOf(0) + "CATALOGNUMBER\u0000STOPPED-012\u0000".toByteArray()
+            val frames = "TYER".toByteArray() + ByteBuffer.allocate(4).putInt(year.size).array() + ByteArray(2) + year +
+                "TXXX".toByteArray() + ByteBuffer.allocate(4).putInt(catalog.size).array() + ByteArray(2) + catalog
+            val size = byteArrayOf((frames.size shr 21 and 127).toByte(), (frames.size shr 14 and 127).toByte(),
+                (frames.size shr 7 and 127).toByte(), (frames.size and 127).toByte())
+            file.writeBytes("ID3".toByteArray() + byteArrayOf(3, 0, 0) + size + frames + file.readBytes())
+            val song = Song(Uri.fromFile(file).toString(), "Stopped metadata", year = "0", fileName = file.name)
+            scenario = ActivityScenario.launch(MainActivity::class.java)
+            lateinit var model: MusicViewModel
+            scenario.onActivity { model = ViewModelProvider(it)[MusicViewModel::class.java] }
+            compose.waitUntil(10_000) { model.playing.value.connected }
+            scenario.onActivity { model.clearQueue(); model.queue(song) }
+            compose.waitUntil(10_000) { model.audio.value.sourceUri == song.uri && model.audio.value.sourceYear == "2026" &&
+                model.audio.value.catalogNumber == "STOPPED-012" }
+            assertFalse("Reading tags must not start playback", model.playing.value.playing)
+            compose.onNodeWithTag("mini-player").performClick()
+            compose.onNodeWithTag("now-playing-year").assertTextEquals("2026").assertIsDisplayed()
+            compose.onNodeWithTag("now-playing-catalog").assertTextEquals("Catalog No. STOPPED-012").assertIsDisplayed()
+        } finally {
+            try { scenario?.close() } finally {
+                context.stopService(android.content.Intent(context, PlaybackService::class.java))
+                check(!file.exists() || file.delete())
+            }
+        }
+    }
+
+    @Test fun nowPlayingFitsPhoneTabletLandscapeAndLargeText() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val file = File(context.filesDir, "resonance-qa-layout.wav")
+        var scenario: ActivityScenario<MainActivity>? = null
+        try {
+            writeSilentWave(file)
+            val song = Song(Uri.fromFile(file).toString(), "A long track title that remains readable",
+                "Layout Artist", "Layout Album", genre = "Ambient; Electronic", year = "2024",
+                duration = 30_000, fileName = file.name, catalogNumber = "LAYOUT-24")
+            scenario = ActivityScenario.launch(MainActivity::class.java)
+            lateinit var model: MusicViewModel
+            scenario.onActivity { model = ViewModelProvider(it)[MusicViewModel::class.java] }
+            compose.waitUntil(10_000) { model.playing.value.connected }
+            scenario.onActivity { model.play(listOf(song)) }
+            compose.waitUntil(10_000) { model.playing.value.playing && model.audio.value.sourceBitrate > 0 }
+            scenario.onActivity { model.togglePlay() }
+            compose.waitUntil(5000) { !model.playing.value.playing }
+            val dimensions = listOf(441 to 709, 400 to 800, 600 to 900, 1000 to 650, 800 to 520, 785 to 367, 340 to 480)
+            for ((width, height) in dimensions) for (scale in listOf(1f, 1.5f)) {
+                val wide = width >= 600 && width >= height
+                val metrics = context.resources.displayMetrics
+                val density = minOf(metrics.widthPixels.toFloat() / width,
+                    metrics.heightPixels.toFloat() / height, metrics.density) * .8f
+                scenario.onActivity { activity ->
+                    activity.window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    activity.setContent {
+                        MurrmurrTheme(AppTheme.CINDER) {
+                            Surface(Modifier.systemBarsPadding(), color = Ink, contentColor = Paper) {
+                                CompositionLocalProvider(LocalDensity provides Density(density, scale)) {
+                                    Box(Modifier.size(width.dp, height.dp).testTag("now-playing-viewport")) {
+                                        NowPlaying(model, Modifier, {}, {}, {}, {}, {})
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                compose.waitForIdle()
+                compose.onNodeWithTag("now-playing-settings").assertIsDisplayed()
+                compose.onNodeWithTag("now-playing-options").assertIsDisplayed()
+                compose.onAllNodes(hasScrollAction()).assertCountEquals(0)
+                compose.onNodeWithContentDescription("Audio information").assertDoesNotExist()
+                compose.onNodeWithText("Output:", substring = true).assertDoesNotExist()
+                compose.onNodeWithText("lost detail", substring = true).assertDoesNotExist()
+                val titleLayouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+                compose.onNodeWithTag("now-playing-title").performSemanticsAction(
+                    androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult) { assertTrue(it(titleLayouts)) }
+                assertEquals(CinderColors.onSurface, titleLayouts.single().layoutInput.style.color)
+                compose.onNodeWithTag("now-playing-format").assertTextEquals("WAV / 705 kbps")
+                compose.onNodeWithTag("now-playing-year").assertTextEquals("2024")
+                compose.onNodeWithTag("now-playing-catalog").assertTextEquals("Catalog No. LAYOUT-24")
+                compose.onNodeWithTag("now-playing-genres").assertTextEquals("Genres: Ambient, Electronic")
+                val artwork = compose.onNodeWithTag("now-playing-artwork").getUnclippedBoundsInRoot()
+                val viewport = compose.onNodeWithTag("now-playing").getUnclippedBoundsInRoot()
+                val toolbar = compose.onNodeWithTag("now-playing-toolbar").getUnclippedBoundsInRoot()
+                val metadata = compose.onNodeWithTag("now-playing-metadata").getUnclippedBoundsInRoot()
+                val artworkSpace = compose.onNodeWithTag("now-playing-artwork-space").getUnclippedBoundsInRoot()
+                val expected = minOf((artworkSpace.right - artworkSpace.left).value,
+                    (artworkSpace.bottom - artworkSpace.top).value)
+                assertEquals((artwork.right - artwork.left).value, (artwork.bottom - artwork.top).value, .5f)
+                assertTrue("Artwork must remain visible", artwork.right > artwork.left && artwork.bottom > artwork.top)
+                assertEquals("Artwork must maximize the remaining space at $width x $height / $scale",
+                    expected, (artwork.right - artwork.left).value, 1f)
+                if (wide) {
+                    compose.onNodeWithTag("now-playing-wide").assertExists()
+                    assertTrue("Wide artwork must be beside metadata", artwork.right <= metadata.left)
+                } else {
+                    compose.onNodeWithTag("now-playing-wide").assertDoesNotExist()
+                    assertTrue("Artwork and metadata must not overlap", artwork.bottom <= metadata.top)
+                }
+                val tags = listOf("artist", "title", "album", "year", "catalog", "genres", "format")
+                val bounds = tags.map { compose.onNodeWithTag("now-playing-$it").assertIsDisplayed().getUnclippedBoundsInRoot() }
+                bounds.zipWithNext().forEach { (first, second) ->
+                    assertTrue("Metadata must stay ordered without overlap at $width x $height / $scale", first.bottom <= second.top)
+                }
+                val controls = compose.onNodeWithTag("now-playing-controls").getUnclippedBoundsInRoot()
+                (bounds + listOf(artwork, controls, toolbar)).forEach { item ->
+                    assertTrue("Everything must fit on one screen at $width x $height / $scale: $item in $viewport",
+                        item.left >= viewport.left && item.right <= viewport.right &&
+                        item.top >= viewport.top && item.bottom <= viewport.bottom)
+                }
+                compose.onNodeWithTag("now-playing-viewport").captureToImage().asAndroidBitmap().let { bitmap ->
+                    File(context.cacheDir, "now-playing-$width-$height-$scale.png").outputStream().use {
+                        assertTrue(bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it))
+                    }
+                }
+                listOf("Toggle shuffle", "Previous track", "Resume playback", "Next track", "Cycle repeat mode").forEach { label ->
+                    val node = compose.onNodeWithContentDescription(label).assertIsDisplayed()
+                    val target = node.fetchSemanticsNode().boundsInRoot
+                    assertTrue("Playback targets must remain 48 dp: $label / $target / density $density", target.width >= 48 * density - 1 &&
+                        target.height >= 48 * density - 1)
+                }
+                compose.onNodeWithTag("now-playing-queue").assertIsDisplayed()
+                compose.onNodeWithTag("now-playing-equalizer").assertIsDisplayed()
+            }
+        } finally {
+            try { scenario?.close() } finally {
+                context.stopService(android.content.Intent(context, PlaybackService::class.java))
+                check(!file.exists() || file.delete())
+            }
+        }
+    }
+
+    @Test fun nowPlayingSongMenuAddsPlaylistsFavoritesRatingsAndQueue() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val repository = LibraryRepository(context)
+        val original = repository.load()
+        val file = File(context.filesDir, "resonance-qa-actions.wav")
+        var scenario: ActivityScenario<MainActivity>? = null
+        try {
+            writeSilentWave(file)
+            val song = Song(Uri.fromFile(file).toString(), "Actions Track", "Actions Artist", "Actions Album",
+                duration = 30_000, fileName = file.name)
+            repository.save(original.copy(songs = listOf(song), playlists = listOf(
+                MusicPlaylist("qa-actions-playlist", "Actions playlist", emptyList()))))
+            scenario = ActivityScenario.launch(MainActivity::class.java)
+            lateinit var model: MusicViewModel
+            scenario.onActivity { model = ViewModelProvider(it)[MusicViewModel::class.java] }
+            compose.waitUntil(10_000) { model.playing.value.connected && model.localLibrary.value.data.songs == listOf(song) }
+            scenario.onActivity { model.play(listOf(song)) }
+            compose.waitUntil(10_000) { model.playing.value.playing }
+            scenario.onActivity { model.togglePlay() }
+            compose.onNodeWithTag("mini-player").performClick()
+            fun action(label: String) {
+                compose.onNodeWithTag("now-playing-options").performClick()
+                compose.onNodeWithText(label).performClick()
+            }
+            action("Add to playlist")
+            compose.onNodeWithText("Actions playlist").performClick()
+            compose.waitUntil(5000) {
+                model.localLibrary.value.data.playlists.single { it.id == "qa-actions-playlist" }.songs == listOf(song.uri)
+            }
+            action("Favorite")
+            compose.waitUntil(5000) { song.uri in model.localLibrary.value.data.favorites }
+            action("Remove favorite")
+            compose.waitUntil(5000) { song.uri !in model.localLibrary.value.data.favorites }
+            action("Rate track")
+            compose.onNodeWithContentDescription("Rate 4 stars").performClick()
+            compose.onNodeWithText("Done").performClick()
+            compose.waitUntil(5000) { model.localLibrary.value.data.ratings[song.uri] == 4 }
+            action("Play next")
+            compose.waitUntil(5000) { model.playing.value.queue.size == 2 }
+            action("Add to queue")
+            compose.waitUntil(5000) { model.playing.value.queue.size == 3 }
+            action("Track information")
+            compose.onNodeWithText("Track information").assertExists()
+            compose.onAllNodes(hasText("Actions Artist") and hasAnyAncestor(isDialog())).onFirst().assertIsDisplayed()
+            compose.onNodeWithText("Done").performClick()
+            scenario.onActivity { it.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE }
+            compose.waitUntil(10_000) { compose.onAllNodesWithTag("now-playing-wide").fetchSemanticsNodes().isNotEmpty() }
+            compose.onNodeWithTag("now-playing-options").assertIsDisplayed()
+            assertEquals(song.uri, model.playing.value.song?.uri)
+            assertEquals(3, model.playing.value.queue.size)
+            compose.onNodeWithTag("now-playing-settings").performClick()
+            compose.onNodeWithText("Settings").assertExists()
+        } finally {
+            try { scenario?.close() } finally {
+                context.stopService(android.content.Intent(context, PlaybackService::class.java))
+                repository.save(original)
+                check(!file.exists() || file.delete())
+            }
+        }
+    }
+
+    @Test fun libraryGridsAddColumnsOnlyInWideWindows() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        var scenario: ActivityScenario<MainActivity>? = null
+        try {
+            scenario = ActivityScenario.launch(MainActivity::class.java)
+            for ((width, mode, columns) in listOf(
+                Triple(400, BrowseMode.ICONS_SMALL, 3), Triple(400, BrowseMode.ICONS_LARGE, 2),
+                Triple(1000, BrowseMode.ICONS_SMALL, 7), Triple(1000, BrowseMode.ICONS_LARGE, 5),
+                Triple(1000, BrowseMode.LIST, 1))) {
+                val metrics = context.resources.displayMetrics
+                val density = minOf(metrics.widthPixels.toFloat() / width, metrics.density) * .8f
+                scenario.onActivity { activity ->
+                    activity.setContent {
+                        CompositionLocalProvider(LocalDensity provides Density(density)) {
+                            BrowseGrid(mode, Modifier.size(width.dp, 600.dp)) {
+                                items(30) {
+                                    Box(Modifier.aspectRatio(1f).testTag("responsive-cell"))
+                                }
+                            }
+                        }
+                    }
+                }
+                compose.waitForIdle()
+                val cells = compose.onAllNodesWithTag("responsive-cell").fetchSemanticsNodes().map { it.boundsInRoot }
+                val top = cells.minOf { it.top }
+                assertEquals("$width dp / $mode", columns, cells.count { kotlin.math.abs(it.top - top) < 1f })
+            }
+        } finally {
+            try { scenario?.close() } finally {
+                context.stopService(android.content.Intent(context, PlaybackService::class.java))
+            }
+        }
+    }
+
     @Test fun offlineLibraryPlaybackQueueAndPersistence() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val repository = LibraryRepository(context)
@@ -282,13 +617,17 @@ class PlayerDeviceTest {
                 Song(Uri.fromFile(file).toString(), "QA Track ${index + 1}", "Resonance Test", "Device Test",
                     genre = "Test", track = index + 1, duration = 30_000, fileName = file.name, size = file.length(), folder = "Test fixtures")
             }
-            repository.save(original.copy(songs = original.songs + songs))
+            repository.save(original.copy(songs = songs))
             scenario = ActivityScenario.launch(MainActivity::class.java)
             lateinit var model: MusicViewModel
-            scenario.onActivity { model = ViewModelProvider(it)[MusicViewModel::class.java] }
+            scenario.onActivity {
+                it.window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                model = ViewModelProvider(it)[MusicViewModel::class.java]
+            }
             compose.waitUntil(20_000) { model.library.value.data.songs.any { it.uri == songs[0].uri } && model.playing.value.connected }
 
             compose.onNodeWithContentDescription("Library", useUnmergedTree = true).performClick()
+            selectLibraryCategory("Songs")
             val titleLayouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
             compose.onNodeWithText("QA Track 1", useUnmergedTree = true)
                 .performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult) {
@@ -312,10 +651,13 @@ class PlayerDeviceTest {
             compose.onAllNodesWithText("QA Track 1").onLast().performClick()
             compose.onNodeWithText("NOW PLAYING").assertExists()
             compose.onNodeWithText("Sleep timer").assertDoesNotExist()
-            compose.onNodeWithText("Queue (2)").assertIsDisplayed()
+            compose.onNodeWithContentDescription("Queue (2)").assertIsDisplayed()
+            compose.onNodeWithTag("now-playing-options").performClick()
+            compose.onNodeWithText("Rate track").performClick()
             compose.onNodeWithContentDescription("Rate 5 stars").performClick()
             compose.waitUntil(5000) { model.library.value.data.ratings[songs[0].uri] == 5 }
-            compose.onNodeWithContentDescription("Audio information").performClick()
+            compose.onNodeWithText("Done").performClick()
+            compose.onNodeWithContentDescription("Settings").performClick()
             compose.onNodeWithText("Audio output").assertExists()
             compose.onNodeWithText("DSP").assertDoesNotExist()
             compose.onNodeWithText("Hi-res").assertDoesNotExist()
@@ -520,7 +862,7 @@ class PlayerDeviceTest {
             assertEquals(24, model.audio.value.sourceBits)
             assertFalse(model.audio.value.equalizer.enabled)
             compose.onNodeWithTag("mini-player").performClick()
-            compose.onNodeWithText("Queue (3)").assertIsDisplayed()
+            compose.onNodeWithContentDescription("Queue (3)").assertIsDisplayed()
             compose.onNodeWithContentDescription("Pause playback").assertIsDisplayed()
             assertFalse(prefs.contains("output_mode"))
             assertFalse(prefs.contains("eq_enabled"))
@@ -545,7 +887,11 @@ class PlayerDeviceTest {
             scenario.onActivity { model.seek(5000) }
             compose.waitUntil(5000) { model.playing.value.position >= 5000 }
             scenario.onActivity { model.next() }
-            compose.waitUntil(10_000) { model.playing.value.playing && model.audio.value.outputBits == 32 && model.audio.value.sourceBits == 16 }
+            try {
+                compose.waitUntil(10_000) { model.playing.value.playing && model.audio.value.outputBits == 32 && model.audio.value.sourceBits == 16 }
+            } catch (error: ComposeTimeoutException) {
+                throw AssertionError("Next-track audio metadata did not settle: playing=${model.playing.value}; audio=${model.audio.value}", error)
+            }
             assertTrue(model.audio.value.outputFloating)
             assertTrue(model.audio.value.explanation.contains("preserve the source"))
             assertEquals(listOf(song.uri, standardSong.uri, mp3Song.uri), model.playing.value.queue.map { it.uri })
@@ -1491,7 +1837,7 @@ class PlayerDeviceTest {
             scenario.onActivity { model.togglePlay() }
             compose.waitUntil(5000) { !model.playing.value.playing }
             compose.onNodeWithTag("mini-player").performClick()
-            compose.onNodeWithText("Queue (3)").performClick()
+            compose.onNodeWithContentDescription("Queue (3)").performClick()
             choose("queue", BrowseMode.ICONS_SMALL)
             compose.onNodeWithContentDescription("Queue options: Mode Alpha").performClick()
             compose.onNodeWithText("Move down in queue").performClick()
@@ -1724,6 +2070,9 @@ class PlayerDeviceTest {
                 val client = NavidromeClient(serverAccount(remote.url, "fixture-user", "fixture-password", true))
                 val catalog = client.catalog({}, {})
                 assertEquals(501, catalog.songs.size)
+                assertEquals(705_000, catalog.songs.first().bitrate)
+                assertEquals("SERVER-CAT-1", catalog.songs.first().catalogNumber)
+                assertEquals("2026", catalog.songs.first().year)
                 assertEquals(listOf("0", "500"), remote.requests.filter { it.first == "search3" }.map { it.second["songOffset"] })
                 remote.invalidPagination = true
                 assertThrows(ServerFailure::class.java) { client.catalog({}, {}) }

@@ -53,7 +53,7 @@ NAS access is through Navidrome, not direct SMB or NFS shares.
 
 1. Download the [latest release APK](https://github.com/AMBIENTCORE/murrmurr/releases/latest)
    to your Android device. Files are named
-   `murmurr_<version>.apk`, for example `murmurr_0.9.8.apk`.
+   `murmurr_<version>.apk`, for example `murmurr_0.9.9.apk`.
 2. Open the APK from your browser's downloads or a file manager.
 3. If Android prompts you, allow that browser or file manager to
    **Install unknown apps**, then return to the APK.
@@ -80,13 +80,35 @@ across restarts and applies to both Local and Server.
 4. Browse **Library**, select a track, and tap the mini-player to open playback
    controls and the queue.
 
-Local scanning has three modes:
+   Local scanning has three modes:
 
 | Mode | Use it for |
 | --- | --- |
 | **Scan for new tracks** | New or changed entries in Android's music index. Does not remove missing tracks. |
 | **Refresh tags / remove missing** | Reconcile the local library with mounted Android music indexes. Offline cards are retained. |
 | **Deep folder scan** | Find unindexed files in selected folders. Slower because it enumerates those folders. |
+
+### Now Playing and tablets
+
+Tap the mini-player for full-width artwork and compact track metadata: artist,
+title, album, year, catalog number when tagged, genres, and file type / bitrate
+when available. Catalog tags in ID3 and Vorbis metadata are read during playback.
+Embedded year/date tags are used even when Android's music index has no year.
+Local year and catalog tags are read without requiring playback, including
+paused or restored tracks.
+The labels are **Catalog No.** and **Genres:**. The gear opens Settings; the
+equalizer and queue icons provide direct access to their controls. **...** opens
+the song menu for ratings, favorites, queue actions, track information and adding
+local tracks to a playlist.
+
+Android tablets are supported in portrait, landscape and resizable windows.
+Landscape and near-square Now Playing windows place artwork beside metadata and
+controls; portrait and narrow windows stack them vertically. Now Playing keeps
+metadata and playback controls on one screen, sizing the artwork to fill the
+remaining space without scrolling. Short windows use compact metadata, and long
+text is ellipsized; full metadata remains available in **Track information**.
+Library icon grids add columns on wider windows, and tablet list actions retain
+48 dp touch targets.
 
 ### NAS / Navidrome
 

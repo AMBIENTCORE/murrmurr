@@ -9,6 +9,31 @@ import java.io.FilterInputStream
 import java.io.IOException
 
 class EmbeddedRatingTagsTest {
+    @Test fun metadataReadsFlacDatesAndCatalogsWithoutDecodingAudioOrRatings() {
+        val tags = comments("date=2026", "CATALOGNUMBER=CAT-012", "RATING=not a percentage",
+            "METADATA_BLOCK_PICTURE=" + "A".repeat(1024 * 1024))
+        val bytes = "fLaC".toByteArray() + byteArrayOf(0x84.toByte()) + uint24(tags.size) + tags
+        val source = CountingInput(bytes)
+        assertEquals(EmbeddedTrackMetadata("2026", "CAT-012"), EmbeddedRatingTags.readMetadata(source, "FLAC"))
+        assertTrue("Metadata reads must skip picture payloads", source.bytesRead < 80 * 1024)
+    }
+
+    @Test fun metadataReadsId3YearsAndUserTextCatalogsIndependentlyOfRatings() {
+        val year = frame("TYER", byteArrayOf(0) + "2024\u0000".toByteArray())
+        val catalog = frame("TXXX", byteArrayOf(3) + "CATALOG NUMBER\u0000ID3-012".toByteArray())
+        val rating = frame("TXXX", byteArrayOf(3) + "RATING\u0000invalid".toByteArray())
+        assertEquals(EmbeddedTrackMetadata("2024", "ID3-012"),
+            EmbeddedRatingTags.readMetadata(ByteArrayInputStream(id3(year + catalog + rating)), "MP3"))
+    }
+
+    @Test fun metadataReadsVorbisAndOpusDateComments() {
+        val fields = comments("YEAR=0", "DATE=1998-01-02", "CATALOGNO=OGG-9")
+        assertEquals(EmbeddedTrackMetadata("1998", "OGG-9"),
+            EmbeddedRatingTags.readMetadata(ByteArrayInputStream(ogg("\u0003vorbis".toByteArray() + fields)), "OGG"))
+        assertEquals(EmbeddedTrackMetadata("1998", "OGG-9"),
+            EmbeddedRatingTags.readMetadata(ByteArrayInputStream(ogg("OpusTags".toByteArray() + fields)), "OPUS"))
+    }
+
     @Test fun verifiedMusicBeeScalesMapToWholeStars() {
         assertEquals(listOf(0, 1, 2, 3, 4, 5), listOf(0, 1, 64, 128, 196, 255).map(EmbeddedRatingTags::popmStars))
         assertEquals(listOf(0, 1, 2, 3, 4, 5), listOf("0", "20", "40", "60", "80", "100").map(EmbeddedRatingTags::percentageStars))

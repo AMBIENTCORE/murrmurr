@@ -18,6 +18,7 @@ import androidx.media3.common.C
 import androidx.media3.common.Format
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.Metadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.Tracks
@@ -27,6 +28,8 @@ import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.extractor.metadata.id3.TextInformationFrame
+import androidx.media3.extractor.metadata.vorbis.VorbisComment
 import androidx.media3.datasource.DataSource
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
@@ -113,7 +116,14 @@ class PlaybackService : MediaSessionService() {
             }
         })
         player.addListener(object : Player.Listener {
-            override fun onEvents(player: Player, events: Player.Events) = sampleListening()
+            override fun onEvents(player: Player, events: Player.Events) {
+                sampleListening()
+                // Transition callbacks clear the old source before this coherent track snapshot is read.
+                if (events.contains(Player.EVENT_TRACKS_CHANGED) || events.contains(Player.EVENT_MEDIA_ITEM_TRANSITION) ||
+                    events.contains(Player.EVENT_PLAYBACK_STATE_CHANGED)) {
+                    readAudioMetadata(player.currentTracks)
+                }
+            }
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 if (isPlaying && ended) {
                     listeningClock.start(SystemClock.elapsedRealtime())
@@ -125,7 +135,6 @@ class PlaybackService : MediaSessionService() {
                 sampleListening()
                 if (playbackState == Player.STATE_ENDED) ended = true
             }
-            override fun onTracksChanged(tracks: Tracks) = readAudioMetadata(tracks)
             override fun onPlayerError(error: PlaybackException) {
                 if (listeningSong?.isServer == true) {
                     val reason = generateSequence<Throwable>(error) { it.cause }.filterIsInstance<ServerFailure>().firstOrNull()?.message
@@ -149,6 +158,9 @@ class PlaybackService : MediaSessionService() {
                 prefs.edit().putInt("queue_index", player.currentMediaItemIndex.coerceAtLeast(0))
                     .putLong("queue_position", player.currentPosition.coerceAtLeast(0))
                     .putString("audio_info", "").putInt("source_bits", 0).putBoolean("source_lossy", false)
+                    .putString("source_uri", mediaItem?.mediaId.orEmpty()).putString("source_codec", "")
+                    .putInt("source_bitrate", 0).putString("source_catalog_number", "")
+                    .putString("source_year", "")
                     .putString("source_note", "").apply()
             }
             override fun onRepeatModeChanged(repeatMode: Int) { prefs.edit().putInt("repeat", repeatMode).apply() }
@@ -209,58 +221,82 @@ class PlaybackService : MediaSessionService() {
     }
 
     private fun readAudioMetadata(tracks: Tracks) {
-        val group = tracks.groups.firstOrNull { it.isSelected && it.type == C.TRACK_TYPE_AUDIO } ?: return
-        val index = (0 until group.length).firstOrNull(group::isTrackSelected) ?: return
-        val format = group.getTrackFormat(index)
-        val lossy = format.sampleMimeType in setOf("audio/mpeg", "audio/mp4a-latm", "audio/aac", "audio/opus",
-            "audio/vorbis", "audio/3gpp", "audio/amr-wb", "audio/ac3", "audio/eac3", "audio/x-ms-wma")
-        val bits = if (format.sampleMimeType == "audio/raw") pcmBitDepth(format.pcmEncoding) else 0
-        publishSource(format, bits, lossy)
-        sourceRead?.cancel()
-        if (lossy || bits > 0 || Build.VERSION.SDK_INT < 31) return
         val item = player.currentMediaItem ?: return
         val uri = item.localConfiguration?.uri ?: return
+        val song = listeningSong
+        val group = tracks.groups.firstOrNull { it.isSelected && it.type == C.TRACK_TYPE_AUDIO }
+        val format = group?.let { selected ->
+            (0 until selected.length).firstOrNull(selected::isTrackSelected)?.let(selected::getTrackFormat)
+        }
+        val lossy = format?.sampleMimeType in setOf("audio/mpeg", "audio/mp4a-latm", "audio/aac", "audio/opus",
+                "audio/vorbis", "audio/3gpp", "audio/amr-wb", "audio/ac3", "audio/eac3", "audio/x-ms-wma")
+        val bits = if (format?.sampleMimeType == "audio/raw") pcmBitDepth(format.pcmEncoding) else 0
+        publishSource(format, bits, lossy)
+        sourceRead?.cancel()
         if (uri.scheme == "resonance-server") {
-            publishSource(format, listeningSong?.sourceBits ?: 0, false)
+            publishSource(format, if (lossy) 0 else song?.sourceBits ?: bits, lossy)
             return
         }
+        val yearAvailable = taggedYear(recordingYear(format?.metadata), song?.year).isNotBlank()
+        val catalogAvailable = catalogNumber(format?.metadata).ifBlank { song?.catalogNumber.orEmpty() }.isNotBlank()
+        if ((lossy || bits > 0 || Build.VERSION.SDK_INT < 31) && (format?.bitrate ?: 0) > 0 &&
+            yearAvailable && (catalogAvailable || song?.extension !in EmbeddedRatingTags.metadataExtensions)) return
         sourceRead = persistenceScope.launch {
             try {
+                val tags = if (song != null && song.extension in EmbeddedRatingTags.metadataExtensions) {
+                    val stream = contentResolver.openInputStream(uri) ?: throw java.io.IOException("Cannot open source tags")
+                    stream.use { EmbeddedRatingTags.readMetadata(it, song.extension) }
+                } else EmbeddedTrackMetadata()
                 val metadata = MediaMetadataRetriever()
-                val sourceBits = try {
+                val (sourceBits, bitrate, year) = try {
                     metadata.setDataSource(this@PlaybackService, uri)
-                    metadata.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITS_PER_SAMPLE)?.toIntOrNull() ?: 0
+                    val sourceBits = if (format != null && !lossy && bits == 0 && Build.VERSION.SDK_INT >= 31)
+                        metadata.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITS_PER_SAMPLE)?.toIntOrNull() ?: bits else bits
+                    Triple(sourceBits, metadata.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE)?.toIntOrNull() ?: 0,
+                        taggedYear(tags.year, metadata.extractMetadata(MediaMetadataRetriever.METADATA_KEY_YEAR),
+                            metadata.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DATE)))
                 } finally { metadata.release() }
                 withContext(Dispatchers.Main) {
-                    if (player.currentMediaItem?.mediaId == item.mediaId) publishSource(format, sourceBits, false)
+                    if (player.currentMediaItem?.mediaId == item.mediaId) {
+                        publishSource(format, sourceBits, lossy, bitrate, year, tags.catalogNumber)
+                    }
                 }
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
-                Log.w("ResonanceSource", "Cannot read source bit depth", error)
+                Log.w("ResonanceSource", "Cannot read source audio metadata", error)
                 withContext(Dispatchers.Main) {
                     if (player.currentMediaItem?.mediaId == item.mediaId) prefs.edit()
-                        .putString("source_note", "Source bit depth unavailable: ${error.message}").apply()
+                        .putString("source_note", "Source audio metadata unavailable: ${error.message}").apply()
                 }
             }
         }
     }
 
-    private fun publishSource(format: Format, bits: Int, lossy: Boolean) {
-        val codec = when (format.sampleMimeType) {
+    private fun publishSource(format: Format?, bits: Int, lossy: Boolean, retrievedBitrate: Int = 0,
+        retrievedYear: String = "", retrievedCatalog: String = "") {
+        val codec = when (format?.sampleMimeType) {
             "audio/mpeg" -> "MP3"
             "audio/mp4a-latm", "audio/aac" -> "AAC"
             "audio/raw" -> "PCM"
-            else -> format.sampleMimeType?.substringAfter('/')?.uppercase(Locale.ROOT) ?: "Unknown codec"
+            else -> format?.sampleMimeType?.substringAfter('/')?.uppercase(Locale.ROOT)
+                ?: listeningSong?.extension?.takeIf { it.isNotBlank() } ?: "Unknown codec"
         }
         val description = buildList {
             add(codec)
-            if (format.sampleRate > 0) add("${format.sampleRate / 1000f} kHz")
+            format?.sampleRate?.takeIf { it > 0 }?.let { add("${it / 1000f} kHz") }
             if (bits > 0) add("$bits-bit")
             if (lossy) add("lossy")
-            if (format.channelCount > 0) add("${format.channelCount} ch")
-            if (format.bitrate > 0) add("${format.bitrate / 1000} kbps")
+            format?.channelCount?.takeIf { it > 0 }?.let { add("$it ch") }
+            format?.bitrate?.takeIf { it > 0 }?.let { add("${it / 1000} kbps") }
         }.joinToString(" / ")
-        prefs.edit().putString("audio_info", description).putInt("source_bits", bits).putBoolean("source_lossy", lossy).apply()
+        val bitrate = format?.bitrate?.takeIf { it > 0 } ?: retrievedBitrate.takeIf { it > 0 }
+            ?: listeningSong?.bitrate ?: 0
+        prefs.edit().putString("audio_info", description).putInt("source_bits", bits).putBoolean("source_lossy", lossy)
+            .putString("source_uri", player.currentMediaItem?.mediaId.orEmpty()).putString("source_codec", codec)
+            .putInt("source_bitrate", bitrate)
+            .putString("source_year", taggedYear(recordingYear(format?.metadata), retrievedYear, listeningSong?.year))
+            .putString("source_catalog_number", catalogNumber(format?.metadata).ifBlank { retrievedCatalog }
+                .ifBlank { listeningSong?.catalogNumber.orEmpty() }).apply()
     }
 
     private fun reportError(message: String) {
@@ -293,6 +329,51 @@ class PlaybackService : MediaSessionService() {
     }
 }
 
+internal fun catalogNumber(metadata: Metadata?): String {
+    if (metadata == null) return ""
+    for (index in 0 until metadata.length()) {
+        val entry = metadata[index]
+        val (key, value) = when (entry) {
+            is VorbisComment -> entry.key to entry.value
+            is TextInformationFrame -> entry.description.orEmpty() to entry.values.firstOrNull().orEmpty()
+            else -> continue
+        }
+        val normalized = key.uppercase(Locale.ROOT).filter(Char::isLetterOrDigit)
+        if (normalized in setOf("CATALOGNUMBER", "CATALOGNO", "CATALOG", "CATALOGUENUMBER", "CATALOGUENO") && value.isNotBlank()) {
+            return value.trim()
+        }
+    }
+    return ""
+}
+
+internal fun recordingYear(metadata: Metadata?): String {
+    if (metadata == null) return ""
+    val years = mutableListOf<String>()
+    val originalYears = mutableListOf<String>()
+    val builder = MediaMetadata.Builder()
+    for (index in 0 until metadata.length()) {
+        val entry = metadata[index]
+        entry.populateMediaMetadata(builder)
+        val (key, value) = when (entry) {
+            is VorbisComment -> entry.key to entry.value
+            is TextInformationFrame -> when (entry.id) {
+                "TYER", "TDRC" -> "YEAR" to entry.values.firstOrNull().orEmpty()
+                "TORY", "TDOR" -> "ORIGINALYEAR" to entry.values.firstOrNull().orEmpty()
+                "TXXX" -> entry.description.orEmpty() to entry.values.firstOrNull().orEmpty()
+                else -> continue
+            }
+            else -> continue
+        }
+        when (key.uppercase(Locale.ROOT).filter(Char::isLetterOrDigit)) {
+            "YEAR", "DATE" -> years += value
+            "ORIGINALYEAR", "ORIGINALDATE" -> originalYears += value
+        }
+    }
+    val decoded = builder.build()
+    return taggedYear(*(years + listOfNotNull(decoded.recordingYear?.toString(), decoded.releaseYear?.toString()) +
+        originalYears).toTypedArray())
+}
+
 fun pcmBitDepth(encoding: Int): Int = when (encoding) {
     C.ENCODING_PCM_8BIT -> 8
     C.ENCODING_PCM_16BIT -> 16
@@ -313,5 +394,6 @@ fun audioEncodingLabel(encoding: Int): String = when (encoding) {
 fun Song.mediaItem(): MediaItem = MediaItem.Builder().setMediaId(uri).setUri(uri)
     .setMediaMetadata(MediaMetadata.Builder().setTitle(title).setArtist(artist).setAlbumTitle(album)
         .setAlbumArtist(albumArtist).setTrackNumber(track).setDiscNumber(disc)
+        .setRecordingYear(taggedYear(year).toIntOrNull())
         .setExtras(Bundle().apply { putString("song_json", LibraryRepository.songToJson(this@mediaItem).toString()) }).build())
     .build()

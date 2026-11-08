@@ -24,6 +24,8 @@ data class Song(
     val coverArtId: String = "",
     val serverAlbumId: String = "",
     val sourceBits: Int = 0,
+    val catalogNumber: String = "",
+    val bitrate: Int = 0,
 ) {
     val isServer: Boolean get() = serverTrackId.isNotEmpty()
     val albumKey: String get() = if (isServer && serverAlbumId.isNotEmpty()) "$serverKey\u0000$serverAlbumId" else "$albumArtist\u0000$album"
@@ -35,6 +37,20 @@ data class Song(
         title.contains(term, true) || artist.contains(term, true) || album.contains(term, true) ||
             albumArtist.contains(term, true) || genre.contains(term, true) || fileName.contains(term, true)
     }
+}
+
+fun trackFormatLabel(song: Song, codec: String = "", bitrate: Int = song.bitrate): String =
+    listOfNotNull(song.extension.ifBlank { codec }.takeIf { it.isNotBlank() },
+        bitrate.takeIf { it > 0 }?.let { "${it / 1000} kbps" }).joinToString(" / ")
+
+private val tagYearPattern = Regex("""^(\d{4})(?:$|[-/.T\s])""")
+
+fun taggedYear(vararg values: String?): String {
+    for (value in values) {
+        val year = value?.trim()?.let { tagYearPattern.find(it)?.groupValues?.get(1) }
+        if (year != null && year.toInt() > 0) return year
+    }
+    return ""
 }
 
 enum class RatingComparison(val label: String) {
