@@ -33,10 +33,13 @@ data class Song(
     val genres: List<String> get() = genre.split(';').map(String::trim).filter(String::isNotEmpty)
         .distinctBy { it.lowercase(Locale.ROOT) }
     fun matches(query: String): Boolean = matchesTerms(searchTerms(query))
-    fun matchesTerms(terms: List<String>): Boolean = terms.all { term ->
-        title.contains(term, true) || artist.contains(term, true) || album.contains(term, true) ||
-            albumArtist.contains(term, true) || genre.contains(term, true) || fileName.contains(term, true) ||
-            year.contains(term, true) || folder.contains(term, true)
+    fun matchesTerms(terms: List<String>, scope: SearchScope = SearchScope.EVERYTHING): Boolean = when (scope) {
+        SearchScope.EVERYTHING -> matchesText(terms, title, artist, album, albumArtist, genre, fileName, year, folder)
+        SearchScope.SONGS -> matchesText(terms, title)
+        SearchScope.ARTISTS -> matchesText(terms, artist, albumArtist)
+        SearchScope.ALBUMS -> matchesText(terms, album)
+        SearchScope.GENRES -> matchesText(terms, *genres.toTypedArray())
+        SearchScope.FOLDERS -> matchesText(terms, folder)
     }
 }
 

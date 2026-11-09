@@ -14,7 +14,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.produceState
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -38,8 +41,11 @@ private object ArtworkCache {
     val missing: MutableSet<String> = ConcurrentHashMap.newKeySet()
     val slots = Semaphore(2)
 
+    fun key(song: Song): String = if (song.isServer) "server:${song.serverKey}:${song.coverArtId}:1024"
+        else "${song.uri}:${song.modified}:${song.size}"
+
     suspend fun load(context: Context, song: Song): Bitmap? = withContext(Dispatchers.IO) {
-        val cacheKey = if (song.isServer) "${song.uri}:${song.coverArtId}:1024" else song.uri
+        val cacheKey = key(song)
         images[cacheKey]?.let { return@withContext it }
         if (cacheKey in missing) return@withContext null
         slots.withPermit {
@@ -79,15 +85,24 @@ private object ArtworkCache {
             try {
                 retriever.setDataSource(context, Uri.parse(song.uri))
                 val bytes = retriever.embeddedPicture
-                if (bytes == null) { missing += song.uri; return@withPermit null }
+                if (bytes == null) { missing += cacheKey; return@withPermit null }
                 decodeArtwork(bytes)?.also { images.put(cacheKey, it) }
             } catch (error: RuntimeException) {
                 Log.w("ResonanceArtwork", "Artwork unavailable for ${song.fileName}", error)
-                missing += song.uri
+                missing += cacheKey
                 null
             } finally { retriever.release() }
         }
     }
+}
+
+private data class LoadedArtwork(val key: String?, val album: String?, val bitmap: Bitmap?)
+
+@Composable
+internal fun PrefetchArtwork(song: Song?) {
+    val context = LocalContext.current.applicationContext
+    val key = song?.let(ArtworkCache::key)
+    LaunchedEffect(key) { song?.let { ArtworkCache.load(context, it) } }
 }
 
 private fun decodeArtwork(bytes: ByteArray): Bitmap? {
@@ -103,9 +118,17 @@ private fun decodeArtwork(bytes: ByteArray): Bitmap? {
 @Composable
 fun Artwork(song: Song?, modifier: Modifier = Modifier) {
     val context = LocalContext.current.applicationContext
-    val image by produceState<Bitmap?>(null, song?.uri, song?.coverArtId) {
-        value = null
-        value = song?.let { ArtworkCache.load(context, it) }
+    val key = song?.let(ArtworkCache::key)
+    val album = song?.takeIf { it.album.isNotBlank() && !it.album.equals("Unknown album", true) &&
+        it.albumArtist.isNotBlank() && !it.albumArtist.equals("Unknown artist", true) }
+        ?.let { "${it.serverKey}:${it.albumKey}" }
+    var loaded by remember { mutableStateOf(LoadedArtwork(null, null, null)) }
+    val cached = key?.let { ArtworkCache.images[it] }
+    val image = cached ?: loaded.bitmap?.takeIf {
+        loaded.key == key || (album != null && loaded.album == album && key !in ArtworkCache.missing)
+    }
+    LaunchedEffect(key) {
+        loaded = LoadedArtwork(key, album, song?.let { ArtworkCache.load(context, it) })
     }
     Box(modifier.clip(RoundedCornerShape(12.dp)), contentAlignment = Alignment.Center) {
         val bitmap = image

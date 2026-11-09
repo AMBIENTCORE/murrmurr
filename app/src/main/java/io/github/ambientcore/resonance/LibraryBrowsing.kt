@@ -5,13 +5,34 @@ import java.util.Locale
 private val whitespace = Regex("\\s+")
 fun searchTerms(query: String): List<String> = query.trim().split(whitespace).filter(String::isNotEmpty)
 
-fun filterSongs(songs: List<Song>, query: String): List<Song> {
-    val terms = searchTerms(query)
-    return if (terms.isEmpty()) songs else songs.filter { it.matchesTerms(terms) }
+enum class SearchScope(val label: String) {
+    EVERYTHING("Everything"), SONGS("Song titles"), ARTISTS("Artists"), ALBUMS("Albums"),
+    GENRES("Genres"), FOLDERS("Folders")
 }
 
-fun matchesText(terms: List<String>, vararg values: String): Boolean =
-    terms.all { term -> values.any { it.contains(term, true) } }
+fun filterSongs(songs: List<Song>, query: String, scope: SearchScope = SearchScope.EVERYTHING): List<Song> {
+    val terms = searchTerms(query)
+    return if (terms.isEmpty()) songs else songs.filter { it.matchesTerms(terms, scope) }
+}
+
+fun matchesText(terms: List<String>, vararg values: String): Boolean {
+    if (terms.isEmpty()) return true
+    val phrase = terms.joinToString(" ")
+    return values.any { value ->
+        val text = whitespace.replace(value.trim(), " ")
+        if (terms.size == 1) text.contains(phrase, true) else {
+            var start = text.indexOf(phrase, ignoreCase = true)
+            var matched = false
+            while (start >= 0 && !matched) {
+                val end = start + phrase.length
+                matched = (start == 0 || !text[start - 1].isLetterOrDigit()) &&
+                    (end == text.length || !text[end].isLetterOrDigit())
+                if (!matched) start = text.indexOf(phrase, start + 1, ignoreCase = true)
+            }
+            matched
+        }
+    }
+}
 
 enum class LibraryCategory(val label: String) {
     SONGS("Songs"), ALBUMS("Albums"), ARTISTS("Artists"), FOLDERS("Folders"), GENRES("Genres")
@@ -27,7 +48,8 @@ enum class SearchSort(val label: String, val songSort: SongSort) {
 
 fun LibraryGroup.year(): Int? = songs.mapNotNull { taggedYear(it.year).toIntOrNull() }.minOrNull()
 
-fun searchGroups(songs: List<Song>, query: String, category: LibraryCategory, sort: SearchSort): List<LibraryGroup> {
+fun searchGroups(songs: List<Song>, query: String, category: LibraryCategory, sort: SearchSort,
+    scope: SearchScope = SearchScope.EVERYTHING): List<LibraryGroup> {
     require(category != LibraryCategory.SONGS) { "Song search does not use collections" }
     val groups = if (category == LibraryCategory.FOLDERS) {
         val roots = folderTree(songs)
@@ -36,7 +58,14 @@ fun searchGroups(songs: List<Song>, query: String, category: LibraryCategory, so
     } else libraryGroups(songs, category)
     val terms = searchTerms(query)
     val matches = groups.filter { group ->
-        matchesText(terms, group.name, group.subtitle) || group.songs.any { it.matchesTerms(terms) }
+        when {
+            scope == SearchScope.ARTISTS && category == LibraryCategory.ARTISTS ||
+                scope == SearchScope.ALBUMS && category == LibraryCategory.ALBUMS ||
+                scope == SearchScope.GENRES && category == LibraryCategory.GENRES -> matchesText(terms, group.name)
+            scope == SearchScope.EVERYTHING -> matchesText(terms, group.name, group.subtitle) ||
+                group.songs.any { it.matchesTerms(terms, scope) }
+            else -> group.songs.any { it.matchesTerms(terms, scope) }
+        }
     }
     val alphabetical = compareBy<LibraryGroup> { it.name.lowercase(Locale.ROOT) }
         .thenBy { it.subtitle.lowercase(Locale.ROOT) }.thenBy { it.id }
@@ -93,10 +122,14 @@ fun songDestinationGroup(song: Song, destination: SongDestination, songs: List<S
 fun libraryGroups(songs: List<Song>, category: LibraryCategory): List<LibraryGroup> {
     val grouped = linkedMapOf<String, MutableList<Song>>()
     val names = mutableMapOf<String, String>()
+    val artistIds = mutableMapOf<String, String>()
     songs.forEach { song ->
         val labels = when (category) {
             LibraryCategory.ALBUMS -> listOf(song.albumKey to song.album)
-            LibraryCategory.ARTISTS -> listOf(song.albumArtist to song.albumArtist)
+            LibraryCategory.ARTISTS -> listOf(song.artist, song.albumArtist).filter(String::isNotBlank)
+                .distinctBy { it.lowercase(Locale.ROOT) }.map { name ->
+                    artistIds.getOrPut(name.lowercase(Locale.ROOT)) { name } to name
+                }
             LibraryCategory.GENRES -> song.genres.ifEmpty { listOf("Unknown genre") }
                 .map { it.lowercase(Locale.ROOT) to it }
             else -> throw IllegalArgumentException("This category does not use grouped browsing")

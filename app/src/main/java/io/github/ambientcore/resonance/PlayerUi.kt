@@ -42,6 +42,10 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
@@ -93,8 +97,16 @@ fun MurrmurrApp(model: MusicViewModel, requestPermission: () -> Unit) {
         var tabs by rememberSaveable { mutableStateOf(listOf(0, 0)) }
         val tab = tabs[source.ordinal]
         var expanded by rememberSaveable { mutableStateOf(false) }
+        var controlsTop by remember { mutableFloatStateOf(Float.NaN) }
+        val density = LocalDensity.current
+        val windowHeight = LocalWindowInfo.current.containerSize.height
+        val noticeInset = if (!expanded) 0.dp else if (controlsTop.isFinite())
+            with(density) { (windowHeight - controlsTop).coerceAtLeast(0f).toDp() } else 108.dp
         val browseKey = if (source == LibrarySource.SERVER) "SERVER:${server.key}" else "LOCAL"
-        var collection by remember(browseKey) { mutableStateOf<Collection?>(null) }
+        var collections by remember(browseKey) { mutableStateOf<List<Collection>>(emptyList()) }
+        val collection = collections.lastOrNull()
+        fun openCollection(item: Collection) { collections = collections + item }
+        fun closeCollection() { collections = collections.dropLast(1) }
         var settings by remember { mutableStateOf(false) }
         var equalizer by remember { mutableStateOf(false) }
         var addSong by remember { mutableStateOf<Song?>(null) }
@@ -146,14 +158,14 @@ fun MurrmurrApp(model: MusicViewModel, requestPermission: () -> Unit) {
                 model.message("No matching tracks in this library. Refresh it and try again.")
             } else {
                 tabs = tabs.mapIndexed { index, old -> if (index == targetSource.ordinal) 1 else old }
-                collection = Collection(group.name, group.subtitle, group.songs,
-                    groupByAlbum = request.destination.category in setOf(LibraryCategory.ARTISTS, LibraryCategory.GENRES))
+                collections = listOf(Collection(group.name, group.subtitle, group.songs,
+                    groupByAlbum = request.destination.category in setOf(LibraryCategory.ARTISTS, LibraryCategory.GENRES)))
                 expanded = false
             }
             songBrowseRequest = null
         }
         BackHandler(expanded || collection != null || tab != 0) {
-            when { expanded -> expanded = false; collection != null -> collection = null
+            when { expanded -> expanded = false; collection != null -> closeCollection()
                 else -> tabs = tabs.mapIndexed { index, old -> if (index == source.ordinal) 0 else old } }
         }
         CompositionLocalProvider(
@@ -164,7 +176,7 @@ fun MurrmurrApp(model: MusicViewModel, requestPermission: () -> Unit) {
             modifier = Modifier.testTag("player-root"),
             containerColor = Ink,
             contentColor = Paper,
-            snackbarHost = { SnackbarHost(snackbar) },
+            snackbarHost = { SnackbarHost(snackbar, Modifier.padding(bottom = noticeInset)) },
             bottomBar = {
                 if (!expanded) Column(Modifier.navigationBarsPadding()) {
                     MiniPlayer(model) { expanded = true }
@@ -177,7 +189,7 @@ fun MurrmurrApp(model: MusicViewModel, requestPermission: () -> Unit) {
                             "Search" to Icons.Rounded.Search, "Playlists" to Icons.AutoMirrored.Rounded.QueueMusic,
                             "Stats" to Icons.Rounded.BarChart).forEachIndexed { index, (label, icon) ->
                             NavigationBarItem(selected = tab == index, onClick = {
-                                tabs = tabs.mapIndexed { position, old -> if (position == source.ordinal) index else old }; collection = null
+                                tabs = tabs.mapIndexed { position, old -> if (position == source.ordinal) index else old }; collections = emptyList()
                             },
                                 icon = { Icon(icon, label) }, label = { Text(label, fontSize = 11.sp) },
                                 colors = NavigationBarItemDefaults.colors(indicatorColor = InputSurface,
@@ -190,10 +202,10 @@ fun MurrmurrApp(model: MusicViewModel, requestPermission: () -> Unit) {
         ) { padding ->
             if (expanded) {
                 NowPlaying(model, Modifier.padding(padding), { expanded = false }, { settings = true }, { equalizer = true },
-                    { addSong = it }, ::showDetails)
+                    { addSong = it }, ::showDetails, controlsPositioned = { controlsTop = it })
             } else Column(Modifier.fillMaxSize().padding(padding)) {
                 Row(Modifier.fillMaxWidth().padding(start = 22.dp, end = 12.dp, top = 10.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                    if (collection != null) IconButton(onClick = { collection = null }) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Back to library") }
+                    if (collection != null) IconButton(onClick = ::closeCollection) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Back to library") }
                     else Image(painterResource(R.drawable.murrmurr_logo), null,
                         modifier = Modifier.size(32.dp).clip(RoundedCornerShape(7.dp)).testTag("app-logo"))
                     Column(Modifier.weight(1f).padding(start = 10.dp)) {
@@ -241,19 +253,20 @@ fun MurrmurrApp(model: MusicViewModel, requestPermission: () -> Unit) {
                             subtitle = "${songs.size} tracks / ${durationLabel(songs.sumOf { it.duration })}",
                             onExport = if (source == LibrarySource.LOCAL) ({ exportSongs = songs; exportPicker.launch("${selected.name.replace(Regex("[^\\w -]"), "_")}.m3u8") }) else null,
                             onRemove = playlist?.takeIf { it.rule == null && source == LibrarySource.LOCAL }?.let { item -> { song -> model.removeFromPlaylist(item.id, song.uri) } },
-                            groupByAlbum = selected.groupByAlbum)
+                            groupByAlbum = selected.groupByAlbum,
+                            openAlbum = { group -> openCollection(Collection(group.name, group.subtitle, group.songs)) })
                     }
                     tab == 0 -> browseState.SaveableStateProvider("$browseKey:home") {
-                        Home(data, model, ::pickFolder, { collection = it }, onAdd, onDetails)
+                        Home(data, model, ::pickFolder, ::openCollection, onAdd, onDetails)
                     }
                     tab == 1 -> browseState.SaveableStateProvider("$browseKey:library") {
-                        Library(sorted, model, data.favorites, ::pickFolder, { collection = it }, onAdd, onDetails)
+                        Library(sorted, model, data.favorites, ::pickFolder, ::openCollection, onAdd, onDetails)
                     }
                     tab == 2 -> browseState.SaveableStateProvider("$browseKey:search") {
-                        Search(sorted, model, data.favorites, onAdd, onDetails) { collection = it }
+                        Search(sorted, model, data.favorites, onAdd, onDetails, ::openCollection)
                     }
                     tab == 3 -> browseState.SaveableStateProvider("$browseKey:playlists") { Playlists(data, { smart -> createSmart = smart; createPlaylist = true }, { importPicker.launch(arrayOf("audio/*", "application/octet-stream", "text/*", "application/json")) },
-                        { collection = it }, model::deletePlaylist, { editSmart = it }, source == LibrarySource.SERVER)
+                        ::openCollection, model::deletePlaylist, { editSmart = it }, source == LibrarySource.SERVER)
                     }
                     else -> browseState.SaveableStateProvider("$browseKey:stats") { StatsScreen(data, history) { model.play(listOf(it)) } }
                 }
@@ -585,17 +598,47 @@ private fun FolderBrowser(songs: List<Song>, query: String, open: (Collection) -
 @Composable
 private fun SongList(songs: List<Song>, model: MusicViewModel, favorites: Set<String>, add: (Song) -> Unit, details: (Song) -> Unit,
     title: String, subtitle: String, showSort: Boolean = false, onExport: (() -> Unit)? = null, onRemove: ((Song) -> Unit)? = null,
-    searchable: Boolean = true, groupByAlbum: Boolean = false, libraryMode: BrowseMode? = null) {
+    searchable: Boolean = true, groupByAlbum: Boolean = false, libraryMode: BrowseMode? = null,
+    openAlbum: ((LibraryGroup) -> Unit)? = null) {
     var query by rememberSaveable(title) { mutableStateOf("") }
     val scope = if (showSort) "songs" else if (title == "Search results") "search" else "collection"
     val presentation = if (libraryMode == null) rememberBrowseMode(scope) else null
     val mode = libraryMode ?: requireNotNull(presentation).first
+    val collectionDisplay = if (groupByAlbum) rememberCollectionDisplay() else null
+    val showAlbums = collectionDisplay?.first == CollectionDisplay.ALBUMS
+    var displayMenu by remember { mutableStateOf(false) }
     val matches = remember(songs, query, searchable) { filterSongs(songs, if (searchable) query else "") }
-    val groups = remember(matches, groupByAlbum) { if (groupByAlbum) albumTrackGroups(matches) else emptyList() }
-    val displayed = remember(matches, groups, groupByAlbum) { if (groupByAlbum) groups.flatMap { it.songs } else matches }
+    val groups = remember(songs, query, searchable, groupByAlbum) {
+        if (groupByAlbum) searchGroups(songs, if (searchable) query else "", LibraryCategory.ALBUMS, SearchSort.ALPHABETICAL)
+            .map { it.copy(songs = sortedSongs(it.songs, SongSort.ALBUM)) } else emptyList()
+    }
+    val displayed = remember(matches, groups, showAlbums) { if (showAlbums) groups.flatMap { it.songs } else matches }
     Column(Modifier.fillMaxSize()) {
-    if (searchable) CategorySearch(query, "Search tracks") { query = it }
-    BrowseGrid(mode, Modifier.weight(1f).testTag("song-list")) {
+    if (searchable) CategorySearch(query, if (showAlbums) "Search albums" else "Search tracks") { query = it }
+    collectionDisplay?.let { (display, changeDisplay) ->
+        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("Display as", color = Muted, fontSize = 12.sp)
+            Box {
+                TextButton(onClick = { displayMenu = true }, modifier = Modifier.testTag("collection-display-menu")
+                    .semantics { stateDescription = display.label }) {
+                    Text(display.label)
+                    Icon(Icons.Rounded.KeyboardArrowDown, null, Modifier.size(18.dp))
+                }
+                DropdownMenu(displayMenu, { displayMenu = false }) {
+                    CollectionDisplay.entries.forEach { option ->
+                        DropdownMenuItem(text = { Text(option.label) },
+                            modifier = Modifier.testTag("collection-display-${option.name}"),
+                            trailingIcon = { if (display == option) Icon(Icons.Rounded.Check, null, tint = Lime) },
+                            onClick = { changeDisplay(option); displayMenu = false })
+                    }
+                }
+            }
+            Spacer(Modifier.weight(1f))
+            presentation?.let { ViewModeMenu(scope, mode, it.second) }
+        }
+    }
+    BrowseGrid(mode, Modifier.weight(1f).testTag("song-list"),
+        columns = if (showAlbums) albumGridColumns(mode) else mode.columns) {
         fullItem {
             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = if (libraryMode == null) 18.dp else 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (libraryMode != null) Text(subtitle, Modifier.weight(1f), color = Muted, fontSize = 12.sp, lineHeight = 16.sp)
@@ -604,7 +647,7 @@ private fun SongList(songs: List<Song>, model: MusicViewModel, favorites: Set<St
                     Text((if (groupByAlbum) "${groups.size} albums / " else "") + if (query.isBlank()) subtitle else "${matches.size} matches",
                         color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
                 }
-                presentation?.let { ViewModeMenu(scope, mode, it.second) }
+                if (!groupByAlbum) presentation?.let { ViewModeMenu(scope, mode, it.second) }
                 if (showSort) SortMenu(model)
                 if (onExport != null) IconButton(onClick = onExport, enabled = songs.isNotEmpty()) { Icon(Icons.Rounded.FileUpload, "Export playlist") }
                 IconButton(onClick = { model.play(displayed, shuffle = true) }, enabled = displayed.isNotEmpty()) { Icon(Icons.Rounded.Shuffle, "Shuffle collection", tint = Lime) }
@@ -612,38 +655,17 @@ private fun SongList(songs: List<Song>, model: MusicViewModel, favorites: Set<St
             }
         }
         if (matches.isEmpty()) fullItem { Text("No matching tracks", Modifier.padding(24.dp), color = Muted) }
-        if (groupByAlbum) {
-            var offset = 0
-            groups.forEach { group ->
-                val start = offset
-                fullItem("album:${group.id}") { AlbumTrackHeading(group, mode) }
-                itemsIndexed(group.songs, key = { index, song -> "${group.id}:${song.uri}:${start + index}" }) { index, song ->
-                    SongRow(song, song.uri in favorites, { model.play(displayed, start + index) }, model, add, details, onRemove, mode)
-                }
-                offset += group.songs.size
+        if (showAlbums) {
+            val navigate = checkNotNull(openAlbum) { "Album collections require navigation" }
+            items(groups, key = { it.id }) { group ->
+                BrowseItem(group.name, "${group.subtitle} / ${group.songs.size} tracks", mode,
+                    modifier = Modifier.testTag("collection-album-${group.id}"), song = group.songs.first(),
+                    onClick = { navigate(group) }, denseArtwork = mode.grid)
             }
         } else itemsIndexed(displayed, key = { index, song -> "${song.uri}:$index" }) { index, song ->
             SongRow(song, song.uri in favorites, { model.play(displayed, index) }, model, add, details, onRemove, mode)
         }
     }
-    }
-}
-
-@Composable
-private fun AlbumTrackHeading(group: LibraryGroup, mode: BrowseMode) {
-    Row(Modifier.fillMaxWidth().padding(horizontal = 22.dp, vertical = 10.dp)
-        .testTag("album-section-${group.id}").semantics(mergeDescendants = true) { heading() },
-        verticalAlignment = Alignment.CenterVertically) {
-        if (mode.artwork) {
-            Artwork(group.songs.first(), Modifier.size(42.dp))
-            Spacer(Modifier.width(12.dp))
-        }
-        Column {
-            Text(group.name, fontSize = 16.sp, lineHeight = 20.sp, fontWeight = FontWeight.SemiBold,
-                maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text("${group.subtitle} / ${group.songs.size} tracks", color = Muted, fontSize = 11.sp, lineHeight = 15.sp,
-                maxLines = 1, overflow = TextOverflow.Ellipsis)
-        }
     }
 }
 
@@ -737,32 +759,36 @@ private fun Search(songs: List<Song>, model: MusicViewModel, favorites: Set<Stri
     details: (Song) -> Unit, open: (Collection) -> Unit) {
     var query by rememberSaveable { mutableStateOf("") }
     var category by rememberSaveable { mutableStateOf(LibraryCategory.SONGS) }
+    var scope by rememberSaveable { mutableStateOf(SearchScope.EVERYTHING) }
     var sort by rememberSaveable { mutableStateOf(SearchSort.ALPHABETICAL) }
     var categoryMenu by remember { mutableStateOf(false) }
+    var scopeMenu by remember { mutableStateOf(false) }
     var sortMenu by remember { mutableStateOf(false) }
     val (mode, changeMode) = rememberBrowseMode("search")
     val focus = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
-    val results = remember(query, songs, sort) {
-        if (query.isBlank()) emptyList() else sortedSongs(filterSongs(songs, query), sort.songSort)
+    val results = remember(query, songs, sort, scope) {
+        if (query.isBlank()) emptyList() else sortedSongs(filterSongs(songs, query, scope), sort.songSort)
     }
-    val groups = remember(query, songs, category, sort) {
-        if (query.isBlank() || category == LibraryCategory.SONGS) emptyList() else searchGroups(songs, query, category, sort)
+    val groups = remember(query, songs, category, sort, scope) {
+        if (query.isBlank() || category == LibraryCategory.SONGS) emptyList() else searchGroups(songs, query, category, sort, scope)
     }
     fun dismissKeyboard() { focus.clearFocus(); keyboard?.hide() }
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(start = 22.dp, end = 8.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("Search", Modifier.weight(1f), fontSize = 26.sp, fontWeight = FontWeight.Bold)
             Box {
-                IconButton(onClick = { dismissKeyboard(); categoryMenu = true }, modifier = Modifier.testTag("search-category-menu")
-                    .semantics { stateDescription = category.label }) {
+                TextButton(onClick = { dismissKeyboard(); categoryMenu = true }, modifier = Modifier.testTag("search-category-menu")
+                    .semantics { stateDescription = category.label; contentDescription = "Display search results as: ${category.label}" }) {
                     Icon(when (category) {
                         LibraryCategory.SONGS -> Icons.Rounded.MusicNote
                         LibraryCategory.ALBUMS -> Icons.Rounded.Album
                         LibraryCategory.ARTISTS -> Icons.Rounded.Person
                         LibraryCategory.GENRES -> Icons.Rounded.Category
                         LibraryCategory.FOLDERS -> Icons.Rounded.Folder
-                    }, "Search results: ${category.label}", tint = Lime)
+                    }, null, Modifier.size(18.dp), tint = Lime)
+                    Text(category.label, Modifier.padding(horizontal = 4.dp), fontSize = 12.sp)
+                    Icon(Icons.Rounded.KeyboardArrowDown, null, Modifier.size(16.dp))
                 }
                 DropdownMenu(categoryMenu, { categoryMenu = false }) {
                     LibraryCategory.entries.forEach { option ->
@@ -785,8 +811,25 @@ private fun Search(songs: List<Song>, model: MusicViewModel, favorites: Set<Stri
                 }
             }
         }
-        CompactSearchField(query, "Songs, artists, albums, genres, folders", { query = it },
-            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp), "global-search", "Clear search")
+        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            Box {
+                TextButton(onClick = { dismissKeyboard(); scopeMenu = true }, modifier = Modifier.testTag("search-scope-menu")
+                    .semantics { stateDescription = scope.label; contentDescription = "Search in: ${scope.label}" }) {
+                    Text("In: ${scope.label}", fontSize = 12.sp)
+                    Icon(Icons.Rounded.KeyboardArrowDown, null, Modifier.size(16.dp))
+                }
+                DropdownMenu(scopeMenu, { scopeMenu = false }) {
+                    SearchScope.entries.forEach { option ->
+                        DropdownMenuItem(text = { Text(option.label) }, modifier = Modifier.testTag("search-scope-${option.name}"),
+                            trailingIcon = { if (scope == option) Icon(Icons.Rounded.Check, null, tint = Lime) },
+                            onClick = { scope = option; scopeMenu = false })
+                    }
+                }
+            }
+            CompactSearchField(query, "Search ${scope.label.lowercase()}", { query = it },
+                Modifier.weight(1f), "global-search", "Clear search")
+        }
         if (query.isNotBlank()) {
             Text("${if (category == LibraryCategory.SONGS) results.size else groups.size} ${category.label.lowercase()}",
                 Modifier.padding(horizontal = 22.dp, vertical = 4.dp), fontSize = 12.sp, color = Muted)
@@ -904,6 +947,7 @@ private fun PlaylistCard(playlist: MusicPlaylist, songs: List<Song>, mode: Brows
 private fun MiniPlayer(model: MusicViewModel, expand: () -> Unit) {
     val state by model.playing.collectAsStateWithLifecycle()
     val song = state.song ?: return
+    PrefetchArtwork(state.queue.getOrNull(state.nextIndex))
     val position = rememberPlaybackPosition(state)
     Column(Modifier.padding(horizontal = 12.dp).clip(RoundedCornerShape(12.dp)).background(InputSurface).clickable(onClick = expand).testTag("mini-player")) {
         Row(Modifier.fillMaxWidth().padding(start = 8.dp, top = 6.dp, bottom = 6.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -912,6 +956,7 @@ private fun MiniPlayer(model: MusicViewModel, expand: () -> Unit) {
                 Text(song.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                 Text(song.artist + if (song.isServer) " / Server" else "", color = Muted, maxLines = 1, fontSize = 10.sp)
             }
+            RepeatModeButton(state, model::repeat, "repeat-mode-mini")
             IconButton(onClick = model::togglePlay) { Icon(if (state.playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, if (state.playing) "Pause" else "Play", tint = Pink) }
             IconButton(onClick = model::next) { Icon(Icons.Rounded.SkipNext, "Next track", tint = Cyan) }
         }
@@ -924,10 +969,12 @@ private fun MiniPlayer(model: MusicViewModel, expand: () -> Unit) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun NowPlaying(model: MusicViewModel, modifier: Modifier, close: () -> Unit, settings: () -> Unit,
-    equalizer: () -> Unit, add: (Song) -> Unit, details: (Song) -> Unit) {
+    equalizer: () -> Unit, add: (Song) -> Unit, details: (Song) -> Unit,
+    controlsPositioned: (Float) -> Unit = {}) {
     val state by model.playing.collectAsStateWithLifecycle()
     val audio by model.audio.collectAsStateWithLifecycle()
     val song = state.song
+    PrefetchArtwork(state.queue.getOrNull(state.nextIndex))
     var queue by rememberSaveable { mutableStateOf(false) }
     BoxWithConstraints(modifier.fillMaxSize().testTag("now-playing")) {
     val compact = maxHeight < 580.dp
@@ -967,7 +1014,7 @@ internal fun NowPlaying(model: MusicViewModel, modifier: Modifier, close: () -> 
                     FittedArtwork(song, Modifier.weight(1f).fillMaxHeight())
                     Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.Center) {
                         NowPlayingMetadata(song, audio, compact, dense)
-                        NowPlayingControls(state, model)
+                        NowPlayingControls(state, model, controlsPositioned)
                     }
                 }
             } else {
@@ -975,7 +1022,7 @@ internal fun NowPlaying(model: MusicViewModel, modifier: Modifier, close: () -> 
                     FittedArtwork(song, Modifier.fillMaxWidth().weight(1f))
                     Spacer(Modifier.height(8.dp))
                     NowPlayingMetadata(song, audio, compact, dense)
-                    NowPlayingControls(state, model)
+                    NowPlayingControls(state, model, controlsPositioned)
                 }
             }
     }
@@ -1054,6 +1101,7 @@ private fun NowPlayingMetadata(song: Song?, audio: AudioUi, compact: Boolean, de
             modifier = Modifier.testTag("now-playing-artist").then(link("Go to artist")))
         Text(song?.title ?: "No track selected", fontWeight = FontWeight.Bold, fontSize = if (dense) 17.sp else if (compact) 18.sp else 22.sp,
             lineHeight = if (dense) 20.sp else if (compact) 22.sp else 26.sp, maxLines = if (compact) 1 else 2,
+            minLines = if (compact) 1 else 2,
             overflow = TextOverflow.Ellipsis, modifier = Modifier.testTag("now-playing-title"))
         Text(song?.album.orEmpty(), fontSize = if (compact) 12.sp else 13.sp, lineHeight = if (dense) 14.sp else 16.sp,
             maxLines = 1, overflow = TextOverflow.Ellipsis,
@@ -1061,9 +1109,11 @@ private fun NowPlayingMetadata(song: Song?, audio: AudioUi, compact: Boolean, de
         Text(taggedYear(currentAudio?.sourceYear, song?.year).ifBlank { "-" }, color = Muted, fontSize = smallText,
             lineHeight = smallLine, maxLines = 1,
             modifier = Modifier.testTag("now-playing-year"))
-        if (catalog.isNotBlank()) Text("Catalog No. $catalog", color = Muted, fontSize = smallText,
-            lineHeight = smallLine, maxLines = 1, overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.testTag("now-playing-catalog"))
+        Box(Modifier.fillMaxWidth().heightIn(min = with(LocalDensity.current) { smallLine.toDp() })) {
+            if (catalog.isNotBlank()) Text("Catalog No. $catalog", color = Muted, fontSize = smallText,
+                lineHeight = smallLine, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.testTag("now-playing-catalog"))
+        }
         Text(genreText, color = Muted, fontSize = smallText,
             lineHeight = smallLine, maxLines = 1, overflow = TextOverflow.Ellipsis,
             modifier = Modifier.testTag("now-playing-genres"))
@@ -1075,8 +1125,9 @@ private fun NowPlayingMetadata(song: Song?, audio: AudioUi, compact: Boolean, de
 }
 
 @Composable
-private fun NowPlayingControls(state: PlayingUi, model: MusicViewModel) {
-    Column(Modifier.fillMaxWidth().requiredHeight(108.dp).testTag("now-playing-controls")) {
+private fun NowPlayingControls(state: PlayingUi, model: MusicViewModel, controlsPositioned: (Float) -> Unit) {
+    Column(Modifier.fillMaxWidth().requiredHeight(108.dp).testTag("now-playing-controls")
+        .onGloballyPositioned { controlsPositioned(it.boundsInRoot().top) }) {
     PlaybackSeekbar(state, model::seek)
     Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceEvenly) {
@@ -1091,13 +1142,23 @@ private fun NowPlayingControls(state: PlayingUi, model: MusicViewModel) {
                 if (state.playing) "Pause playback" else "Resume playback", Modifier.size(30.dp))
         }
         IconButton(onClick = model::next, modifier = Modifier.size(48.dp)) { Icon(Icons.Rounded.SkipNext, "Next track", Modifier.size(28.dp)) }
-        IconButton(onClick = model::repeat, modifier = Modifier.size(48.dp).semantics {
-            stateDescription = when (state.repeat) { Player.REPEAT_MODE_ONE -> "One"; Player.REPEAT_MODE_ALL -> "All"; else -> "Off" }
-        }) {
-            Icon(if (state.repeat == Player.REPEAT_MODE_ONE) Icons.Rounded.RepeatOne else Icons.Rounded.Repeat,
-                "Cycle repeat mode", tint = if (state.repeat == Player.REPEAT_MODE_OFF) Muted else Lime)
-        }
+        RepeatModeButton(state, model::repeat, "repeat-mode-player")
     }
+    }
+}
+
+@Composable
+private fun RepeatModeButton(state: PlayingUi, change: () -> Unit, tag: String) {
+    val active = state.repeat != Player.REPEAT_MODE_OFF
+    IconButton(onClick = change, enabled = state.connected,
+        colors = IconButtonDefaults.iconButtonColors(containerColor = Lime.copy(alpha = if (active) .12f else 0f)),
+        modifier = Modifier.size(48.dp).testTag(tag).semantics {
+            stateDescription = when (state.repeat) {
+                Player.REPEAT_MODE_ONE -> "One"; Player.REPEAT_MODE_ALL -> "All"; else -> "Off"
+            }
+        }) {
+        Icon(if (state.repeat == Player.REPEAT_MODE_ONE) Icons.Rounded.RepeatOne else Icons.Rounded.Repeat,
+            "Cycle repeat mode", tint = if (active) Lime else Muted)
     }
 }
 

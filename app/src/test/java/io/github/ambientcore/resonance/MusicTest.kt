@@ -101,11 +101,38 @@ class MusicTest {
         assertEquals("1:01:01", durationLabel(3_661_000))
     }
 
-    @Test fun searchCombinesTermsAcrossMetadataAndIgnoresCase() {
-        assertTrue(first.matches("FIRST ambient"))
-        assertTrue(first.matches("artist 01.flac"))
+    @Test fun searchRequiresAWholePhraseInOneFieldAndIgnoresCase() {
+        assertTrue(first.matches("FIRST light"))
+        assertTrue(first.matches(" the   ARTIST "))
+        assertFalse(first.matches("FIRST ambient"))
+        assertFalse(first.matches("artist 01.flac"))
         assertTrue(first.matches(""))
         assertFalse(first.matches("First missing"))
+    }
+
+    @Test fun searchScopesDoNotLeakUnrelatedArtistsOrScatteredWordFragments() {
+        val band = first.copy(artist = "System Of A Down", albumArtist = "System Of A Down", album = "Toxicity")
+        val scattered = second.copy(title = "System", artist = "Down", album = "Of A")
+        val cover = second.copy(uri = "cover", title = "System Of A Down tribute", artist = "Cover band", albumArtist = "Cover band")
+        val longer = second.copy(uri = "longer", artist = "System Of A Downer", albumArtist = "System Of A Downer")
+        val songs = listOf(band, scattered, cover, longer)
+        assertEquals(listOf(band, cover), filterSongs(songs, "system of a down"))
+        assertEquals(listOf(band), filterSongs(songs, " system  OF\tA down ", SearchScope.ARTISTS))
+        assertEquals(listOf(cover), filterSongs(songs, "system of a down", SearchScope.SONGS))
+        assertEquals(listOf(band), filterSongs(songs, "toxi", SearchScope.ALBUMS))
+        assertTrue(filterSongs(songs, "system of a down", SearchScope.GENRES).isEmpty())
+    }
+
+    @Test fun scopedArtistResultsIncludePerformersButDoNotShowOtherAlbumCredits() {
+        val band = first.copy(artist = "System Of A Down", albumArtist = "System Of A Down")
+        val compilation = second.copy(artist = "system of a down", albumArtist = "Various artists")
+        val unrelated = second.copy(uri = "unrelated", artist = "Other", albumArtist = "Various artists")
+        val songs = listOf(band, compilation, unrelated)
+        val artists = searchGroups(songs, "system of a down", LibraryCategory.ARTISTS, SearchSort.ALPHABETICAL, SearchScope.ARTISTS)
+        assertEquals(listOf("System Of A Down"), artists.map { it.name })
+        assertEquals(listOf(band, compilation), artists.single().songs)
+        val albums = searchGroups(songs, "system of a down", LibraryCategory.ALBUMS, SearchSort.ALPHABETICAL, SearchScope.ARTISTS)
+        assertTrue(albums.any { it.songs == listOf(compilation, unrelated) })
     }
 
     @Test fun importSupportsMusicBeeWindowsPathsCommentsAndBom() {
@@ -194,8 +221,10 @@ class MusicTest {
         val songs = listOf(first.copy(album = "Sunrise", genre = "Rock"), second.copy(album = "Night", genre = "Jazz"))
         val albums = libraryGroups(songs, LibraryCategory.ALBUMS)
         assertTrue(filterGroups(albums, "Rock").isEmpty())
-        assertEquals("Sunrise", filterGroups(albums, "sun ARTIST").single().name)
-        assertEquals(listOf(songs[0]), filterSongs(songs, "first ROCK"))
+        assertTrue(filterGroups(albums, "sun ARTIST").isEmpty())
+        assertEquals("Sunrise", filterGroups(albums, "sun").single().name)
+        assertTrue(filterSongs(songs, "first ROCK").isEmpty())
+        assertEquals(listOf(songs[0]), filterSongs(songs, "first light"))
         assertSame(songs, filterSongs(songs, "  "))
         assertTrue(filterGroups(libraryGroups(songs, LibraryCategory.ARTISTS), "Sunrise").isEmpty())
     }

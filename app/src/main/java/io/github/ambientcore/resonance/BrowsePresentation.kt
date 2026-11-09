@@ -39,6 +39,22 @@ enum class BrowseMode(val label: String, val columns: Int = 1) {
     val artwork: Boolean get() = this == LIST_ICON || grid
 }
 
+enum class CollectionDisplay(val label: String) { SONGS("Songs"), ALBUMS("Albums") }
+
+@Composable
+fun rememberCollectionDisplay(): Pair<CollectionDisplay, (CollectionDisplay) -> Unit> {
+    val context = LocalContext.current.applicationContext
+    val prefs = remember(context) { context.getSharedPreferences("browse", Context.MODE_PRIVATE) }
+    val key = "${LocalBrowseSource.current}collection-display"
+    var display by rememberSaveable(key) {
+        val saved = prefs.getString(key, CollectionDisplay.ALBUMS.name)
+        val restored = CollectionDisplay.entries.firstOrNull { it.name == saved }
+        if (restored == null) Log.w("ResonanceBrowse", "Unknown collection display: $saved")
+        mutableStateOf(restored ?: CollectionDisplay.ALBUMS)
+    }
+    return display to { display = it; prefs.edit().putString(key, it.name).apply() }
+}
+
 private val LocalBrowseActionSize = staticCompositionLocalOf { 48.dp }
 val LocalBrowseSource = staticCompositionLocalOf { "" }
 

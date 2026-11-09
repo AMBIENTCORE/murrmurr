@@ -459,6 +459,254 @@ class PlayerDeviceTest {
         }
     }
 
+    @Test fun searchedArtistFirstTrackPlaysAndRemainsReachableFromSecond() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val repository = LibraryRepository(context)
+        val original = repository.load()
+        val songs = mutableListOf<Song>()
+        context.contentResolver.query(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+            arrayOf("_id", "title", "artist", "album", "album_artist", "track", "_display_name", "duration"),
+            "artist LIKE ?", arrayOf("System Of A Down"), "album, track, title")?.use { cursor ->
+            while (cursor.moveToNext() && songs.size < 2) {
+                songs += Song(android.content.ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+                    cursor.getLong(0)).toString(), cursor.getString(1), cursor.getString(2), cursor.getString(3),
+                    albumArtist = cursor.getString(4).orEmpty().ifBlank { cursor.getString(2) },
+                    track = cursor.getInt(5), fileName = cursor.getString(6), duration = cursor.getLong(7))
+            }
+        } ?: error("Cannot query artist playback fixtures")
+        org.junit.Assume.assumeTrue("Requires two indexed System Of A Down tracks", songs.size == 2)
+        var scenario: ActivityScenario<MainActivity>? = null
+        try {
+            repository.save(original.copy(songs = songs))
+            context.getSharedPreferences("browse", Context.MODE_PRIVATE).edit()
+                .putString("mode:search", BrowseMode.LIST.name)
+                .putString("mode:collection", BrowseMode.LIST.name)
+                .putString("collection-display", CollectionDisplay.ALBUMS.name).apply()
+            scenario = ActivityScenario.launch(MainActivity::class.java)
+            lateinit var model: MusicViewModel
+            scenario.onActivity { model = ViewModelProvider(it)[MusicViewModel::class.java] }
+            compose.waitUntil(10_000) { !model.library.value.loading && model.playing.value.connected }
+            compose.onNodeWithContentDescription("Search", useUnmergedTree = true).performClick()
+            compose.onNodeWithTag("global-search").performTextInput("System Of A Down")
+            compose.onNodeWithTag("global-search").performImeAction()
+            compose.onNodeWithTag("search-category-menu").performClick()
+            compose.onNodeWithTag("search-category-ARTISTS").performClick()
+            compose.onNodeWithTag("search-group-${songs.first().albumArtist}").performClick()
+            compose.onNodeWithTag("collection-album-${songs.first().albumKey}").performClick()
+            fun clickTrack(song: Song) {
+                compose.onNodeWithTag("song-list").performScrollToNode(hasTestTag("track-${song.uri}"))
+                compose.onNodeWithTag("track-${song.uri}").performTouchInput { click(center) }
+                compose.waitUntil(10_000) { model.playing.value.song?.uri == song.uri && model.playing.value.playing }
+                assertTrue(model.audio.value.playbackError, model.audio.value.playbackError.isBlank())
+            }
+            clickTrack(songs[0])
+            assertEquals(0, model.playing.value.index)
+            assertEquals(songs.map { it.uri }, model.playing.value.queue.map { it.uri })
+            clickTrack(songs[1])
+            compose.onNodeWithTag("mini-player").performClick()
+            scenario.onActivity { model.message("QA transport controls remain accessible") }
+            compose.onNodeWithText("QA transport controls remain accessible").assertIsDisplayed()
+            val notice = compose.onNodeWithText("QA transport controls remain accessible").fetchSemanticsNode().boundsInRoot
+            val controls = compose.onNodeWithTag("now-playing-controls").fetchSemanticsNode().boundsInRoot
+            assertTrue("Messages must not cover playback buttons", notice.bottom <= controls.top)
+            scenario.onActivity { model.seek(5000) }
+            compose.onNodeWithContentDescription("Previous track").performClick()
+            compose.waitUntil(10_000) { model.playing.value.song?.uri == songs[0].uri && model.playing.value.playing }
+            assertEquals(0, model.playing.value.index)
+        } finally {
+            try { scenario?.close() } finally {
+                context.stopService(android.content.Intent(context, PlaybackService::class.java))
+                repository.save(original)
+            }
+        }
+    }
+
+    @Test fun searchScopesAndArtistAlbumNavigationRemainIndependentOfViewModes() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val repository = LibraryRepository(context)
+        val original = repository.load()
+        val file = File(context.filesDir, "qa-scoped-search.wav")
+        var scenario: ActivityScenario<MainActivity>? = null
+        try {
+            writeSilentWave(file)
+            fun song(id: String, title: String, album: String, track: Int) =
+                Song(Uri.fromFile(file).buildUpon().fragment(id).build().toString(), title, "System Of A Down",
+                    album, track = track, duration = 30_000, fileName = file.name)
+            val first = song("first", "Prison Song", "Toxicity", 1)
+            val second = song("second", "Needles", "Toxicity", 2)
+            val third = song("third", "Attack", "Hypnotize", 1)
+            val scattered = song("scattered", "System restart", "Of A Kind", 1)
+                .copy(artist = "Down Band", albumArtist = "Down Band")
+            val cover = song("cover", "System Of A Down tribute", "Covers", 1)
+                .copy(artist = "Cover Band", albumArtist = "Cover Band")
+            repository.save(original.copy(songs = listOf(first, second, third, scattered, cover)))
+            context.getSharedPreferences("browse", Context.MODE_PRIVATE).edit()
+                .putString("mode:search", BrowseMode.LIST.name).putString("mode:collection", BrowseMode.LIST.name)
+                .putString("collection-display", CollectionDisplay.ALBUMS.name).apply()
+            scenario = ActivityScenario.launch(MainActivity::class.java)
+            lateinit var model: MusicViewModel
+            scenario.onActivity { model = ViewModelProvider(it)[MusicViewModel::class.java] }
+            compose.waitUntil(10_000) { !model.library.value.loading && model.playing.value.connected }
+            compose.onNodeWithContentDescription("Search", useUnmergedTree = true).performClick()
+            compose.onNodeWithTag("global-search").performTextInput("system of a down")
+            compose.onNodeWithTag("global-search").performImeAction()
+            compose.onNodeWithTag("track-${scattered.uri}").assertDoesNotExist()
+            compose.onNodeWithTag("track-${cover.uri}").assertExists()
+            compose.onNodeWithTag("search-scope-menu").performClick()
+            compose.onNodeWithTag("search-scope-ARTISTS").performClick()
+            compose.onNodeWithTag("search-category-menu").assert(hasStateDescription("Songs"))
+            compose.onNodeWithTag("track-${cover.uri}").assertDoesNotExist()
+            compose.onNodeWithTag("search-category-menu").performClick()
+            compose.onNodeWithTag("search-category-ALBUMS").performClick()
+            compose.onNodeWithTag("search-scope-menu").assert(hasStateDescription("Artists"))
+            compose.onNodeWithTag("search-group-${first.albumKey}").assertExists()
+            compose.onNodeWithTag("search-group-${third.albumKey}").assertExists()
+            compose.onNodeWithTag("search-category-menu").performClick()
+            compose.onNodeWithTag("search-category-ARTISTS").performClick()
+            compose.onNodeWithTag("search-group-System Of A Down").performClick()
+            compose.onNodeWithTag("collection-display-menu").assert(hasStateDescription("Albums"))
+            compose.onNodeWithTag("collection-album-${first.albumKey}").performClick()
+            compose.onNodeWithTag("song-list").performScrollToNode(hasTestTag("track-${first.uri}"))
+            compose.onNodeWithTag("track-${first.uri}").performTouchInput { click(center) }
+            compose.waitUntil(10_000) { model.playing.value.playing && model.playing.value.song?.uri == first.uri }
+            assertEquals(listOf(first.uri, second.uri), model.playing.value.queue.map { it.uri })
+            compose.onNodeWithTag("track-${second.uri}").performTouchInput { click(center) }
+            compose.waitUntil(10_000) { model.playing.value.song?.uri == second.uri }
+            compose.onNodeWithTag("mini-player").performClick()
+            scenario.onActivity { model.seek(5000) }
+            compose.onNodeWithContentDescription("Previous track").performClick()
+            compose.waitUntil(10_000) { model.playing.value.song?.uri == first.uri && model.playing.value.playing }
+            compose.onNodeWithContentDescription("Close now playing").performClick()
+            compose.onNodeWithContentDescription("Back to library").performClick()
+            compose.onNodeWithTag("collection-title").assertTextEquals("System Of A Down")
+            compose.onNodeWithTag("collection-display-menu").performClick()
+            compose.onNodeWithTag("collection-display-SONGS").performClick()
+            val displayed = sortedSongs(listOf(first, second, third), SongSort.ALBUM)
+            for (mode in BrowseMode.entries) {
+                compose.onNodeWithTag("view-mode-collection").performClick()
+                compose.onNodeWithText(mode.label).performClick()
+                compose.onNodeWithTag("song-list").performScrollToNode(hasTestTag("track-${displayed[0].uri}"))
+                compose.onNodeWithTag("track-${displayed[0].uri}").performTouchInput { click(center) }
+                compose.waitUntil(10_000) { model.playing.value.playing && model.playing.value.index == 0 &&
+                    model.playing.value.song?.uri == displayed[0].uri }
+                assertEquals(displayed.map { it.uri }, model.playing.value.queue.map { it.uri })
+            }
+            compose.onNodeWithContentDescription("Back to library").performClick()
+            compose.onNodeWithTag("search-group-System Of A Down").performClick()
+            compose.onNodeWithTag("collection-display-menu").assert(hasStateDescription("Songs"))
+            compose.onNodeWithContentDescription("Back to library").performClick()
+            scenario.recreate()
+            compose.onNodeWithTag("global-search").assertTextContains("system of a down")
+            compose.onNodeWithTag("search-scope-menu").assert(hasStateDescription("Artists"))
+            compose.onNodeWithTag("search-category-menu").assert(hasStateDescription("Artists"))
+        } finally {
+            try { scenario?.close() } finally {
+                context.stopService(android.content.Intent(context, PlaybackService::class.java))
+                repository.save(original)
+                check(!file.exists() || file.delete())
+            }
+        }
+    }
+
+    @Test fun repeatButtonsCyclePersistAndRepeatOneOrTheWholeQueue() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val prefs = context.getSharedPreferences("playback", Context.MODE_PRIVATE)
+        val originalRepeat = prefs.getInt("repeat", 0)
+        val file = File(context.filesDir, "qa-repeat-controls.wav")
+        var scenario: ActivityScenario<MainActivity>? = null
+        try {
+            prefs.edit().putInt("repeat", androidx.media3.common.Player.REPEAT_MODE_OFF).apply()
+            writeSilentWave(file, seconds = 20)
+            val first = Song(Uri.fromFile(file).buildUpon().fragment("one").build().toString(), "Repeat first",
+                duration = 20_000, fileName = file.name)
+            val second = first.copy(uri = Uri.fromFile(file).buildUpon().fragment("two").build().toString(), title = "Repeat second")
+            scenario = ActivityScenario.launch(MainActivity::class.java)
+            lateinit var model: MusicViewModel
+            scenario.onActivity { model = ViewModelProvider(it)[MusicViewModel::class.java] }
+            compose.waitUntil(10_000) { model.playing.value.connected }
+            scenario.onActivity { model.play(listOf(first, second)) }
+            compose.waitUntil(10_000) { model.playing.value.playing && model.playing.value.song?.uri == first.uri }
+            compose.onNodeWithTag("repeat-mode-mini").assert(hasStateDescription("Off")).performClick()
+            compose.waitUntil(5000) { model.playing.value.repeat == androidx.media3.common.Player.REPEAT_MODE_ALL }
+            compose.onNodeWithTag("mini-player").performClick()
+            compose.onNodeWithTag("repeat-mode-player").assert(hasStateDescription("All")).performClick()
+            compose.waitUntil(5000) { model.playing.value.repeat == androidx.media3.common.Player.REPEAT_MODE_ONE }
+            scenario.onActivity { model.seek(19_850) }
+            compose.waitUntil(10_000) { model.playing.value.playing && model.playing.value.song?.uri == first.uri &&
+                model.playing.value.position < 1500 }
+            compose.onNodeWithTag("repeat-mode-player").assert(hasStateDescription("One")).performClick()
+            compose.waitUntil(5000) { model.playing.value.repeat == androidx.media3.common.Player.REPEAT_MODE_OFF }
+            scenario.onActivity { model.seek(19_850) }
+            compose.waitUntil(10_000) { model.playing.value.playing && model.playing.value.song?.uri == second.uri }
+            compose.onNodeWithTag("repeat-mode-player").performClick()
+            compose.waitUntil(5000) { model.playing.value.repeat == androidx.media3.common.Player.REPEAT_MODE_ALL }
+            scenario.onActivity { model.seek(19_850) }
+            compose.waitUntil(10_000) { model.playing.value.playing && model.playing.value.song?.uri == first.uri }
+            compose.onNodeWithContentDescription("Close now playing").performClick()
+            scenario.recreate()
+            compose.onNodeWithTag("repeat-mode-mini").assert(hasStateDescription("All"))
+            assertEquals(androidx.media3.common.Player.REPEAT_MODE_ALL, prefs.getInt("repeat", -1))
+        } finally {
+            try { scenario?.close() } finally {
+                context.stopService(android.content.Intent(context, PlaybackService::class.java))
+                prefs.edit().putInt("repeat", originalRepeat).apply()
+                check(!file.exists() || file.delete())
+            }
+        }
+    }
+
+    @Test fun naturalTrackTransitionKeepsArtworkAndLayoutVisibleEveryFrame() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val firstFile = File(context.filesDir, "qa-transition-first.mp3")
+        val secondFile = File(context.filesDir, "qa-transition-second.mp3")
+        val prefs = context.getSharedPreferences("playback", Context.MODE_PRIVATE)
+        val originalRepeat = prefs.getInt("repeat", 0)
+        var scenario: ActivityScenario<MainActivity>? = null
+        try {
+            prefs.edit().putInt("repeat", 0).apply()
+            writeArtworkMp3(firstFile, android.graphics.Color.RED)
+            writeArtworkMp3(secondFile, android.graphics.Color.GREEN)
+            val first = Song(Uri.fromFile(firstFile).toString(), "First artwork", "Transition artist", "Transition album",
+                fileName = firstFile.name, catalogNumber = "CAT-1")
+            val second = first.copy(uri = Uri.fromFile(secondFile).toString(),
+                title = "Second artwork with a deliberately long title that wraps onto another line",
+                fileName = secondFile.name, catalogNumber = "")
+            scenario = ActivityScenario.launch(MainActivity::class.java)
+            lateinit var model: MusicViewModel
+            scenario.onActivity { model = ViewModelProvider(it)[MusicViewModel::class.java] }
+            compose.waitUntil(10_000) { model.playing.value.connected }
+            scenario.onActivity { model.play(listOf(first, second)) }
+            compose.waitUntil(10_000) { model.playing.value.playing && model.playing.value.duration > 1000 }
+            compose.onNodeWithTag("mini-player").performClick()
+            val image = hasTestTag("artwork-image") and hasAnyAncestor(hasTestTag("now-playing-artwork"))
+            val placeholder = hasTestTag("artwork-placeholder") and hasAnyAncestor(hasTestTag("now-playing-artwork"))
+            compose.waitUntil(10_000) { compose.onAllNodes(image, useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }
+            val bounds = compose.onNodeWithTag("now-playing-artwork").fetchSemanticsNode().boundsInRoot
+            compose.waitUntil(5000) { model.playing.value.position > 1000 }
+            compose.mainClock.autoAdvance = false
+            scenario.onActivity { model.seek(model.playing.value.duration - 150) }
+            repeat(80) {
+                compose.mainClock.advanceTimeByFrame()
+                Thread.sleep(16)
+                compose.onNode(placeholder, useUnmergedTree = true).assertDoesNotExist()
+                val frame = compose.onNodeWithTag("now-playing-artwork").fetchSemanticsNode().boundsInRoot
+                assertEquals("Artwork must not resize during metadata changes", bounds.height, frame.height, 1f)
+            }
+            compose.mainClock.autoAdvance = true
+            compose.waitUntil(10_000) { model.playing.value.song?.uri == second.uri && model.playing.value.playing }
+            val screenshot = compose.onNodeWithTag("now-playing-artwork").captureToImage().toPixelMap()
+            assertEquals(androidx.compose.ui.graphics.Color.Green, screenshot[screenshot.width / 2, screenshot.height / 2])
+        } finally {
+            compose.mainClock.autoAdvance = true
+            try { scenario?.close() } finally {
+                context.stopService(android.content.Intent(context, PlaybackService::class.java))
+                prefs.edit().putInt("repeat", originalRepeat).apply()
+                check(!firstFile.exists() || firstFile.delete())
+                check(!secondFile.exists() || secondFile.delete())
+            }
+        }
+    }
+
     @Test fun searchCategoriesSortYearsAndPreserveCompleteCollections() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val repository = LibraryRepository(context)
@@ -792,18 +1040,7 @@ class PlayerDeviceTest {
         var scenario: ActivityScenario<MainActivity>? = null
         try {
             writeSilentWave(plain, seconds = 1)
-            writeSilentMp3(embedded)
-            val picture = android.graphics.Bitmap.createBitmap(16, 16, android.graphics.Bitmap.Config.ARGB_8888)
-            val png = java.io.ByteArrayOutputStream()
-            try {
-                picture.eraseColor(android.graphics.Color.CYAN)
-                assertTrue(picture.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, png))
-            } finally { picture.recycle() }
-            val payload = byteArrayOf(0) + "image/png\u0000".toByteArray() + byteArrayOf(3, 0) + png.toByteArray()
-            val frame = "APIC".toByteArray() + ByteBuffer.allocate(4).putInt(payload.size).array() + ByteArray(2) + payload
-            val length = byteArrayOf((frame.size shr 21 and 127).toByte(), (frame.size shr 14 and 127).toByte(),
-                (frame.size shr 7 and 127).toByte(), (frame.size and 127).toByte())
-            embedded.writeBytes("ID3".toByteArray() + byteArrayOf(3, 0, 0) + length + frame + embedded.readBytes())
+            writeArtworkMp3(embedded, android.graphics.Color.CYAN)
             val plainSong = Song(Uri.fromFile(plain).toString(), "No image", fileName = plain.name)
             val embeddedSong = Song(Uri.fromFile(embedded).toString(), "Embedded image", fileName = embedded.name)
             repository.save(original.copy(songs = listOf(plainSong, embeddedSong)))
@@ -1178,6 +1415,10 @@ class PlayerDeviceTest {
             fun checkCollection(title: String, vararg indexes: Int) {
                 compose.onNodeWithTag("song-list").performScrollToNode(hasTestTag("collection-title"))
                 compose.onNodeWithTag("collection-title").assertTextEquals(title)
+                if (compose.onAllNodesWithTag("collection-display-menu").fetchSemanticsNodes().isNotEmpty()) {
+                    compose.onNodeWithTag("collection-display-menu").performClick()
+                    compose.onNodeWithTag("collection-display-SONGS").performClick()
+                }
                 indexes.forEach { index ->
                     compose.onNodeWithTag("song-list").performScrollToNode(hasTestTag("track-${songs[index].uri}"))
                     compose.onNodeWithTag("track-${songs[index].uri}").assertIsDisplayed()
@@ -1788,7 +2029,7 @@ class PlayerDeviceTest {
         assertTrue("EQ processing must have ample real-time headroom", median < 500)
     }
 
-    @Test fun compactAlbumGridsAndArtistGenreAlbumSections() {
+    @Test fun compactAlbumGridsAndArtistGenreAlbumNavigation() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val repository = LibraryRepository(context)
         val original = repository.load()
@@ -1805,6 +2046,8 @@ class PlayerDeviceTest {
                 }
             }
             repository.save(original.copy(songs = songs))
+            context.getSharedPreferences("browse", Context.MODE_PRIVATE).edit()
+                .putString("collection-display", CollectionDisplay.ALBUMS.name).apply()
             scenario = ActivityScenario.launch(MainActivity::class.java)
             lateinit var model: MusicViewModel
             scenario.onActivity { model = ViewModelProvider(it)[MusicViewModel::class.java] }
@@ -1841,26 +2084,30 @@ class PlayerDeviceTest {
             compose.onNodeWithText("Compact list").performClick()
             val groups = albumTrackGroups(songs)
             val first = groups[0]
-            val header = "album-section-${first.id}"
-            compose.onNodeWithTag("song-list").performScrollToNode(hasTestTag(header))
-            val headingTop = compose.onNodeWithTag(header).fetchSemanticsNode().boundsInRoot.top
-            val firstTop = compose.onNodeWithTag("track-${first.songs[0].uri}").fetchSemanticsNode().boundsInRoot.top
-            val secondTop = compose.onNodeWithTag("track-${first.songs[1].uri}").fetchSemanticsNode().boundsInRoot.top
-            assertTrue(headingTop < firstTop && firstTop < secondTop)
+            val album = "collection-album-${first.id}"
+            compose.onNodeWithTag("song-list").performScrollToNode(hasTestTag(album))
+            compose.onNodeWithTag(album).performClick()
+            compose.onNodeWithTag("song-list").performScrollToNode(hasTestTag("track-${first.songs[0].uri}"))
+            compose.onNodeWithTag("track-${first.songs[0].uri}").performTouchInput { click(center) }
+            compose.waitUntil(10_000) { model.playing.value.playing && model.playing.value.song?.uri == first.songs[0].uri }
             compose.onNodeWithTag("track-${first.songs[1].uri}").performClick()
             compose.waitUntil(10_000) { model.playing.value.playing && model.playing.value.song?.uri == first.songs[1].uri }
-            assertEquals(groups.flatMap { it.songs }.map { it.uri }, model.playing.value.queue.map { it.uri })
+            assertEquals(first.songs.map { it.uri }, model.playing.value.queue.map { it.uri })
             scenario.onActivity { model.togglePlay() }
+            compose.onNodeWithContentDescription("Back to library").performClick()
+            compose.onNodeWithTag("collection-title").assertTextEquals("QA Performer")
             compose.onNodeWithContentDescription("Back to library").performClick()
             selectLibraryCategory("Genres")
             compose.onNodeWithTag("library-group-qa genre").performClick()
-            compose.onNodeWithTag("song-list").performScrollToNode(hasTestTag(header))
-            compose.onNodeWithTag(header).assertIsDisplayed()
+            compose.onNodeWithTag("song-list").performScrollToNode(hasTestTag(album))
+            compose.onNodeWithTag(album).assertIsDisplayed()
             compose.onNodeWithTag("category-search").performTextReplacement("Album 01")
             compose.onNodeWithTag("category-search").performImeAction()
-            compose.onNodeWithTag(header).assertDoesNotExist()
-            compose.onNodeWithTag("album-section-${groups[1].id}").assertIsDisplayed()
+            compose.onNodeWithTag(album).assertDoesNotExist()
+            compose.onNodeWithTag("collection-album-${groups[1].id}").performClick()
             compose.onNodeWithTag("track-${groups[1].songs[0].uri}").assertIsDisplayed()
+            compose.onNodeWithContentDescription("Back to library").performClick()
+            compose.onNodeWithTag("collection-title").assertTextEquals("QA Genre")
             compose.onNodeWithContentDescription("Back to library").performClick()
             compose.onNodeWithText("Genres").assertIsDisplayed()
         } finally {
@@ -1926,6 +2173,8 @@ class PlayerDeviceTest {
             compose.onNodeWithTag("category-search").performTextReplacement("hard")
             compose.onNodeWithText("Jazz").assertDoesNotExist()
             compose.onNodeWithText("Hard Rock").performClick()
+            compose.onNodeWithTag("collection-display-menu").performClick()
+            compose.onNodeWithTag("collection-display-SONGS").performClick()
             compose.onNodeWithText("QA Alpha").assertIsDisplayed()
             compose.onNodeWithText("QA Gamma").assertDoesNotExist()
             compose.onNodeWithContentDescription("Back to library").performClick()
@@ -2849,6 +3098,21 @@ class PlayerDeviceTest {
         val length = byteArrayOf((frame.size shr 21 and 127).toByte(), (frame.size shr 14 and 127).toByte(),
             (frame.size shr 7 and 127).toByte(), (frame.size and 127).toByte())
         return "ID3".toByteArray() + byteArrayOf(3, 0, 0) + length + frame
+    }
+
+    private fun writeArtworkMp3(file: File, color: Int) {
+        writeSilentMp3(file)
+        val picture = android.graphics.Bitmap.createBitmap(16, 16, android.graphics.Bitmap.Config.ARGB_8888)
+        val png = java.io.ByteArrayOutputStream()
+        try {
+            picture.eraseColor(color)
+            assertTrue(picture.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, png))
+        } finally { picture.recycle() }
+        val payload = byteArrayOf(0) + "image/png\u0000".toByteArray() + byteArrayOf(3, 0) + png.toByteArray()
+        val frame = "APIC".toByteArray() + ByteBuffer.allocate(4).putInt(payload.size).array() + ByteArray(2) + payload
+        val length = byteArrayOf((frame.size shr 21 and 127).toByte(), (frame.size shr 14 and 127).toByte(),
+            (frame.size shr 7 and 127).toByte(), (frame.size and 127).toByte())
+        file.writeBytes("ID3".toByteArray() + byteArrayOf(3, 0, 0) + length + frame + file.readBytes())
     }
 
     private fun writeSilentMp3(file: File) {

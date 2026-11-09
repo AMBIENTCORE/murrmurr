@@ -53,7 +53,7 @@ NAS access is through Navidrome, not direct SMB or NFS shares.
 
 1. Download the [latest release APK](https://github.com/AMBIENTCORE/murrmurr/releases/latest)
    to your Android device. Files are named
-   `murmurr_<version>.apk`, for example `murmurr_0.9.15.apk`.
+   `murmurr_<version>.apk`, for example `murmurr_0.9.16.apk`.
 2. Open the APK from your browser's downloads or a file manager.
 3. If Android prompts you, allow that browser or file manager to
    **Install unknown apps**, then return to the APK.
@@ -123,14 +123,40 @@ remaining space without scrolling. Short windows use compact metadata, and long
 text is ellipsized; full metadata remains available in **Track information**.
 Both progress bars advance at the display frame rate between player position
 samples. Pausing, buffering and seeking update the position immediately.
+The repeat button is available in both the mini-player and Now Playing. Tap it
+to cycle **Off**, **All** (loop the queue), and **One** (loop the current track).
+The active mode is highlighted; repeat-one also displays a **1**. The choice is
+saved across restarts. Previous goes to the preceding queued track when one
+exists, even after several seconds of playback; at the first track it restarts
+that track. Status messages stay clear of playback controls.
+Upcoming artwork is prefetched using the actual next queue item, including
+shuffle order. Cached artwork appears immediately; same-album artwork stays
+visible while the next cover loads, without a placeholder flash. Title and
+catalog-number space stays stable across track changes.
 Library icon grids add columns on wider windows, and tablet list actions retain
 48 dp touch targets.
 
 ### Search
 
-Use the category icon beside the view-mode icon to show search results as
-**Songs**, **Albums**, **Artists**, **Genres**, or **Folders**. Opening a matching
-collection shows all its tracks, not just the songs matching the query.
+Use **In: Everything** to choose which metadata to search: **Everything**,
+**Song titles**, **Artists** (performer or album artist), **Albums**, **Genres**,
+or **Folders**. This filter is independent of the result selector
+(**Songs**, **Albums**, **Artists**, **Genres**, or **Folders**) and the visual
+view-mode button (list, icons, or compact list). Switching either display choice
+keeps the query and search scope.
+
+Multi-word queries match a complete phrase within one metadata field, ignoring
+case and extra whitespace. Words scattered across unrelated fields no longer
+match; for example, `System Of A Down` does not match an artist containing only
+`Down` and a different album containing `System`. Single-word queries still
+support partial-name searches.
+
+Opening an artist or genre offers **Display as: Albums / Songs**, with the
+same visual view modes as the library. Album entries are clickable and open
+their correctly ordered track lists; Back returns to the artist/genre before
+returning to search. Songs view contains playable tracks only, not album
+headings that look like unclickable first tracks. Opening a search collection
+preserves its complete contents, not just the tracks matching the query.
 The sort icon offers **Alphabetical**, **Year (newest first)**, and
 **Year (oldest first)**. Unknown years sort last; collection years use the
 earliest known track year. Use **Refresh tags / remove missing** to populate
