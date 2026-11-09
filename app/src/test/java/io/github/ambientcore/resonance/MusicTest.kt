@@ -8,6 +8,36 @@ class MusicTest {
         fileName = "01.flac", path = "/storage/emulated/0/Music/01.flac", duration = 65_000)
     private val second = Song("content://music/2", "Second", "Other Artist", "Two", track = 1, fileName = "02.mp3")
 
+    @Test fun searchCategoriesRetainCompleteAlbumsAndMatchAcrossTrackMetadata() {
+        val hit = first.copy(title = "Needle", year = "1998", folder = "Music/One",
+            path = "/storage/emulated/0/Music/One/01.flac")
+        val sibling = hit.copy(uri = "content://music/3", title = "Other track", track = 1)
+        val groups = searchGroups(listOf(hit, sibling, second), "needle", LibraryCategory.ALBUMS, SearchSort.ALPHABETICAL)
+        assertEquals(1, groups.size)
+        assertEquals(setOf(hit.uri, sibling.uri), groups.single().songs.map { it.uri }.toSet())
+        assertEquals(1998, groups.single().year())
+        assertEquals(1, searchGroups(listOf(hit, sibling, second), "ambient", LibraryCategory.GENRES, SearchSort.ALPHABETICAL).size)
+        assertEquals("The Artist", searchGroups(listOf(hit, sibling), "needle", LibraryCategory.ARTISTS,
+            SearchSort.ALPHABETICAL).single().name)
+        assertEquals("One", searchGroups(listOf(hit, sibling), "needle", LibraryCategory.FOLDERS,
+            SearchSort.ALPHABETICAL).single().name)
+    }
+
+    @Test fun searchYearSortsKeepMissingYearsLastAndUseAlphabeticalTies() {
+        val alpha = first.copy(title = "Alpha", album = "Alpha", year = "2001")
+        val beta = first.copy(uri = "b", title = "Beta", album = "Beta", year = "1998-01-01")
+        val unknown = first.copy(uri = "c", title = "Unknown", album = "Unknown", year = "0")
+        val tie = alpha.copy(uri = "d", title = "Another", album = "Another")
+        val songs = listOf(unknown, beta, tie, alpha)
+        assertEquals(listOf(alpha, tie, beta, unknown), sortedSongs(songs, SongSort.YEAR_NEWEST))
+        assertEquals(listOf(beta, alpha, tie, unknown), sortedSongs(songs, SongSort.YEAR_OLDEST))
+        assertEquals(listOf("Alpha", "Another", "Beta", "Unknown"),
+            searchGroups(songs, "", LibraryCategory.ALBUMS, SearchSort.YEAR_NEWEST).map { it.name })
+        assertEquals(listOf("Beta", "Alpha", "Another", "Unknown"),
+            searchGroups(songs, "", LibraryCategory.ALBUMS, SearchSort.YEAR_OLDEST).map { it.name })
+        assertTrue(filterSongs(songs, "1998").contains(beta))
+    }
+
     @Test fun formatLabelOnlyShowsFileTypeAndAvailableBitrate() {
         assertEquals("FLAC / 960 kbps", trackFormatLabel(first.copy(bitrate = 960_000)))
         assertEquals("FLAC", trackFormatLabel(first))

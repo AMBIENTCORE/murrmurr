@@ -91,12 +91,7 @@ class PlaybackService : MediaSessionService() {
         }.apply()
         readToneSettings()
         prefs.registerOnSharedPreferenceChangeListener(equalizerListener)
-        val factory = object : DefaultRenderersFactory(this) {
-            override fun buildAudioSink(context: Context, enableFloatOutput: Boolean, enableAudioTrackPlaybackParams: Boolean): AudioSink =
-                EqualizerAudioSink(DefaultAudioSink.Builder(context).setEnableFloatOutput(true).build()) {
-                    equalizerParameters
-                }
-        }
+        val factory = PlaybackRenderersFactory(this) { equalizerParameters }
         player = ExoPlayer.Builder(this, factory)
             .setMediaSourceFactory(DefaultMediaSourceFactory(DataSource.Factory { ServerAudioSource(this) }))
             .build().apply {
@@ -134,16 +129,21 @@ class PlaybackService : MediaSessionService() {
             override fun onPlaybackStateChanged(playbackState: Int) {
                 sampleListening()
                 if (playbackState == Player.STATE_ENDED) ended = true
+                if (playbackState == Player.STATE_READY) prefs.edit().remove("playback_error").apply()
             }
             override fun onPlayerError(error: PlaybackException) {
                 if (listeningSong?.isServer == true) {
                     val reason = generateSequence<Throwable>(error) { it.cause }.filterIsInstance<ServerFailure>().firstOrNull()?.message
                         ?: "Server playback failed (${error.errorCodeName}); check the connection or audio format"
+                    prefs.edit().putString("playback_error", reason).apply()
                     reportError(reason)
                     return
                 }
                 Log.e("ResonancePlayback", "Decoder or audio output failed", error)
-                reportError("Playback failed: ${error.message}")
+                val reason = "${listeningSong?.extension?.ifBlank { "Audio" } ?: "Audio"} playback failed " +
+                    "(${error.errorCodeName}): ${generateSequence<Throwable>(error) { it.cause }.last().message ?: error.message}"
+                prefs.edit().putString("playback_error", reason).apply()
+                reportError(reason)
             }
             override fun onTimelineChanged(timeline: androidx.media3.common.Timeline, reason: Int) = saveQueue()
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
@@ -161,6 +161,7 @@ class PlaybackService : MediaSessionService() {
                     .putString("source_uri", mediaItem?.mediaId.orEmpty()).putString("source_codec", "")
                     .putInt("source_bitrate", 0).putString("source_catalog_number", "")
                     .putString("source_year", "")
+                    .remove("playback_error")
                     .putString("source_note", "").apply()
             }
             override fun onRepeatModeChanged(repeatMode: Int) { prefs.edit().putInt("repeat", repeatMode).apply() }
@@ -247,6 +248,11 @@ class PlaybackService : MediaSessionService() {
                     val stream = contentResolver.openInputStream(uri) ?: throw java.io.IOException("Cannot open source tags")
                     stream.use { EmbeddedRatingTags.readMetadata(it, song.extension) }
                 } else EmbeddedTrackMetadata()
+                withContext(Dispatchers.Main) {
+                    if (player.currentMediaItem?.mediaId == item.mediaId) {
+                        publishSource(format, bits, lossy, retrievedYear = tags.year, retrievedCatalog = tags.catalogNumber)
+                    }
+                }
                 val metadata = MediaMetadataRetriever()
                 val (sourceBits, bitrate, year) = try {
                     metadata.setDataSource(this@PlaybackService, uri)
@@ -327,6 +333,13 @@ class PlaybackService : MediaSessionService() {
             .invokeOnCompletion { persistenceScope.cancel() }
         super.onDestroy()
     }
+}
+
+internal class PlaybackRenderersFactory(context: Context, private val parameters: () -> EqualizerParameters) :
+    DefaultRenderersFactory(context) {
+    init { setEnableDecoderFallback(true) }
+    override fun buildAudioSink(context: Context, enableFloatOutput: Boolean, enableAudioTrackPlaybackParams: Boolean): AudioSink =
+        EqualizerAudioSink(DefaultAudioSink.Builder(context).setEnableFloatOutput(true).build(), parameters)
 }
 
 internal fun catalogNumber(metadata: Metadata?): String {

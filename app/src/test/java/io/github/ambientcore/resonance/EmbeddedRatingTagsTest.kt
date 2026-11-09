@@ -9,6 +9,20 @@ import java.io.FilterInputStream
 import java.io.IOException
 
 class EmbeddedRatingTagsTest {
+    @Test fun m4aMetadataReadsReleaseYearAndCatalogWithoutPlatformDecoders() {
+        val date = atom("\u00a9day", atom("data", be(1) + ByteArray(4) + "2026-03-27".toByteArray()))
+        val catalog = atom("----", atom("mean", ByteArray(4) + "com.apple.iTunes".toByteArray()) +
+            atom("name", ByteArray(4) + "CATALOGNUMBER".toByteArray()) +
+            atom("data", be(1) + ByteArray(4) + "M4A-012".toByteArray()))
+        val unrelated = atom("----", atom("mean", ByteArray(4) + "com.apple.iTunes".toByteArray()) +
+            atom("name", ByteArray(4) + "LYRICS".toByteArray()) +
+            atom("data", be(1) + ByteArray(4) + ByteArray(8192) { 65 }))
+        val bytes = mp4(date + catalog + unrelated)
+        assertEquals(EmbeddedTrackMetadata("2026", "M4A-012"),
+            EmbeddedRatingTags.readMetadata(ByteArrayInputStream(bytes), "M4A"))
+        assertNull(read(bytes, "M4A"))
+    }
+
     @Test fun metadataReadsFlacDatesAndCatalogsWithoutDecodingAudioOrRatings() {
         val tags = comments("date=2026", "CATALOGNUMBER=CAT-012", "RATING=not a percentage",
             "METADATA_BLOCK_PICTURE=" + "A".repeat(1024 * 1024))
@@ -165,7 +179,7 @@ class EmbeddedRatingTagsTest {
     private fun comments(vararg entries: String): ByteArray = le(0) + le(entries.size) +
         entries.fold(ByteArray(0)) { all, entry -> entry.toByteArray().let { all + le(it.size) + it } }
     private fun flac(data: ByteArray) = "fLaC".toByteArray() + byteArrayOf(0x84.toByte()) + uint24(data.size) + data
-    private fun atom(type: String, data: ByteArray) = be(data.size + 8) + type.toByteArray() + data
+    private fun atom(type: String, data: ByteArray) = be(data.size + 8) + type.toByteArray(Charsets.ISO_8859_1) + data
     private fun mp4(data: ByteArray) = atom("ftyp", "M4A ".toByteArray()) +
         atom("moov", atom("udta", atom("meta", ByteArray(4) + atom("ilst", data))))
     private fun chunk(type: String, data: ByteArray) = type.toByteArray() + le(data.size) + data +

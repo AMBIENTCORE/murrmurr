@@ -53,7 +53,7 @@ NAS access is through Navidrome, not direct SMB or NFS shares.
 
 1. Download the [latest release APK](https://github.com/AMBIENTCORE/murrmurr/releases/latest)
    to your Android device. Files are named
-   `murmurr_<version>.apk`, for example `murmurr_0.9.10.apk`.
+   `murmurr_<version>.apk`, for example `murmurr_0.9.11.apk`.
 2. Open the APK from your browser's downloads or a file manager.
 3. If Android prompts you, allow that browser or file manager to
    **Install unknown apps**, then return to the APK.
@@ -85,7 +85,7 @@ across restarts and applies to both Local and Server.
 | Mode | Use it for |
 | --- | --- |
 | **Scan for new tracks** | New or changed entries in Android's music index. Does not remove missing tracks. |
-| **Refresh tags / remove missing** | Reconcile the local library with mounted Android music indexes. Offline cards are retained. |
+| **Refresh tags / remove missing** | Reconcile mounted Android music indexes and read embedded years missing from the index. Offline cards are retained. |
 | **Deep folder scan** | Find unindexed files in selected folders. Slower because it enumerates those folders. |
 
 ### Now Playing and tablets
@@ -115,6 +115,21 @@ remaining space without scrolling. Short windows use compact metadata, and long
 text is ellipsized; full metadata remains available in **Track information**.
 Library icon grids add columns on wider windows, and tablet list actions retain
 48 dp touch targets.
+
+### Search
+
+Use the category icon beside the view-mode icon to show search results as
+**Songs**, **Albums**, **Artists**, **Genres**, or **Folders**. Opening a matching
+collection shows all its tracks, not just the songs matching the query.
+The sort icon offers **Alphabetical**, **Year (newest first)**, and
+**Year (oldest first)**. Unknown years sort last; collection years use the
+earliest known track year. Use **Refresh tags / remove missing** to populate
+years when Android's index omits them. The fast new-track scan remains index-only.
+
+M4A is a container that may hold AAC or ALAC audio; decoding uses the device's
+supported codecs, with fallback to another available decoder when initialization
+fails. Playback errors remain visible in Now Playing with a **Retry** action and
+an error code. Unsupported or damaged files are not silently skipped.
 
 ### NAS / Navidrome
 

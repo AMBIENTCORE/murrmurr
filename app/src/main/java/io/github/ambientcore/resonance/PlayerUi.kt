@@ -246,7 +246,9 @@ fun MurrmurrApp(model: MusicViewModel, requestPermission: () -> Unit) {
                     tab == 1 -> browseState.SaveableStateProvider("$browseKey:library") {
                         Library(sorted, model, data.favorites, ::pickFolder, { collection = it }, onAdd, onDetails)
                     }
-                    tab == 2 -> browseState.SaveableStateProvider("$browseKey:search") { Search(sorted, model, data.favorites, onAdd, onDetails) }
+                    tab == 2 -> browseState.SaveableStateProvider("$browseKey:search") {
+                        Search(sorted, model, data.favorites, onAdd, onDetails) { collection = it }
+                    }
                     tab == 3 -> browseState.SaveableStateProvider("$browseKey:playlists") { Playlists(data, { smart -> createSmart = smart; createPlaylist = true }, { importPicker.launch(arrayOf("audio/*", "application/octet-stream", "text/*", "application/json")) },
                         { collection = it }, model::deletePlaylist, { editSmart = it }, source == LibrarySource.SERVER)
                     }
@@ -714,14 +716,82 @@ private fun SongActions(song: Song, model: MusicViewModel, add: (Song) -> Unit, 
 }
 
 @Composable
-private fun Search(songs: List<Song>, model: MusicViewModel, favorites: Set<String>, add: (Song) -> Unit, details: (Song) -> Unit) {
+private fun Search(songs: List<Song>, model: MusicViewModel, favorites: Set<String>, add: (Song) -> Unit,
+    details: (Song) -> Unit, open: (Collection) -> Unit) {
     var query by rememberSaveable { mutableStateOf("") }
-    val results = remember(query, songs) { if (query.isBlank()) emptyList() else filterSongs(songs, query) }
-    Column {
-        Text("Search", Modifier.padding(horizontal = 22.dp, vertical = 12.dp), fontSize = 26.sp, fontWeight = FontWeight.Bold)
-        CompactSearchField(query, "Songs, artists, albums, genres", { query = it },
+    var category by rememberSaveable { mutableStateOf(LibraryCategory.SONGS) }
+    var sort by rememberSaveable { mutableStateOf(SearchSort.ALPHABETICAL) }
+    var categoryMenu by remember { mutableStateOf(false) }
+    var sortMenu by remember { mutableStateOf(false) }
+    val (mode, changeMode) = rememberBrowseMode("search")
+    val focus = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
+    val results = remember(query, songs, sort) {
+        if (query.isBlank()) emptyList() else sortedSongs(filterSongs(songs, query), sort.songSort)
+    }
+    val groups = remember(query, songs, category, sort) {
+        if (query.isBlank() || category == LibraryCategory.SONGS) emptyList() else searchGroups(songs, query, category, sort)
+    }
+    fun dismissKeyboard() { focus.clearFocus(); keyboard?.hide() }
+    Column(Modifier.fillMaxSize()) {
+        Row(Modifier.fillMaxWidth().padding(start = 22.dp, end = 8.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("Search", Modifier.weight(1f), fontSize = 26.sp, fontWeight = FontWeight.Bold)
+            Box {
+                IconButton(onClick = { dismissKeyboard(); categoryMenu = true }, modifier = Modifier.testTag("search-category-menu")
+                    .semantics { stateDescription = category.label }) {
+                    Icon(when (category) {
+                        LibraryCategory.SONGS -> Icons.Rounded.MusicNote
+                        LibraryCategory.ALBUMS -> Icons.Rounded.Album
+                        LibraryCategory.ARTISTS -> Icons.Rounded.Person
+                        LibraryCategory.GENRES -> Icons.Rounded.Category
+                        LibraryCategory.FOLDERS -> Icons.Rounded.Folder
+                    }, "Search results: ${category.label}", tint = Lime)
+                }
+                DropdownMenu(categoryMenu, { categoryMenu = false }) {
+                    LibraryCategory.entries.forEach { option ->
+                        DropdownMenuItem(text = { Text(option.label) }, modifier = Modifier.testTag("search-category-${option.name}"),
+                            trailingIcon = { if (category == option) Icon(Icons.Rounded.Check, null, tint = Lime) },
+                            onClick = { category = option; categoryMenu = false })
+                    }
+                }
+            }
+            ViewModeMenu("search", mode, changeMode)
+            Box {
+                IconButton(onClick = { dismissKeyboard(); sortMenu = true }, modifier = Modifier.testTag("search-sort-menu")
+                    .semantics { stateDescription = sort.label }) { Icon(Icons.Rounded.Sort, "Sort search results", tint = Muted) }
+                DropdownMenu(sortMenu, { sortMenu = false }) {
+                    SearchSort.entries.forEach { option ->
+                        DropdownMenuItem(text = { Text(option.label) }, modifier = Modifier.testTag("search-sort-${option.name}"),
+                            trailingIcon = { if (sort == option) Icon(Icons.Rounded.Check, null, tint = Lime) },
+                            onClick = { sort = option; sortMenu = false })
+                    }
+                }
+            }
+        }
+        CompactSearchField(query, "Songs, artists, albums, genres, folders", { query = it },
             Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp), "global-search", "Clear search")
-        if (query.isNotBlank()) SongList(results, model, favorites, add, details, "Search results", "${results.size} matches", searchable = false)
+        if (query.isNotBlank()) {
+            Text("${if (category == LibraryCategory.SONGS) results.size else groups.size} ${category.label.lowercase()}",
+                Modifier.padding(horizontal = 22.dp, vertical = 4.dp), fontSize = 12.sp, color = Muted)
+            BrowseGrid(mode, Modifier.weight(1f).testTag("search-results")) {
+                if (category == LibraryCategory.SONGS) {
+                    if (results.isEmpty()) fullItem { Text("No matches", Modifier.padding(24.dp), color = Muted) }
+                    itemsIndexed(results, key = { index, song -> "${song.uri}:$index" }) { index, song ->
+                        SongRow(song, song.uri in favorites, { model.play(results, index) }, model, add, details, mode = mode)
+                    }
+                } else {
+                    if (groups.isEmpty()) fullItem { Text("No matches", Modifier.padding(24.dp), color = Muted) }
+                    items(groups, key = { it.id }) { group ->
+                        BrowseItem(group.name, listOf(group.subtitle, group.year()?.toString().orEmpty(), "${group.songs.size} tracks")
+                            .filter { it.isNotBlank() }.joinToString(" / "), mode,
+                            modifier = Modifier.testTag("search-group-${group.id}"), song = group.songs.first(),
+                            icon = if (category == LibraryCategory.FOLDERS) Icons.Rounded.Folder else null,
+                            onClick = { open(Collection(group.name, group.subtitle, sortedSongs(group.songs, SongSort.ALBUM),
+                                groupByAlbum = category in setOf(LibraryCategory.ARTISTS, LibraryCategory.GENRES))) })
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -864,6 +934,13 @@ internal fun NowPlaying(model: MusicViewModel, modifier: Modifier, close: () -> 
                 }
             }
         }
+            if (audio.playbackError.isNotBlank()) {
+                Row(Modifier.fillMaxWidth().testTag("playback-error"), verticalAlignment = Alignment.CenterVertically) {
+                    Text(audio.playbackError, Modifier.weight(1f), color = MaterialTheme.colorScheme.error,
+                        fontSize = 11.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                    TextButton(onClick = model::togglePlay) { Text("Retry") }
+                }
+            }
             if (wide) {
                 Row(Modifier.fillMaxWidth().weight(1f).padding(vertical = 4.dp).testTag("now-playing-wide"),
                     horizontalArrangement = Arrangement.spacedBy(16.dp),

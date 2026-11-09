@@ -35,7 +35,8 @@ data class Song(
     fun matches(query: String): Boolean = matchesTerms(searchTerms(query))
     fun matchesTerms(terms: List<String>): Boolean = terms.all { term ->
         title.contains(term, true) || artist.contains(term, true) || album.contains(term, true) ||
-            albumArtist.contains(term, true) || genre.contains(term, true) || fileName.contains(term, true)
+            albumArtist.contains(term, true) || genre.contains(term, true) || fileName.contains(term, true) ||
+            year.contains(term, true) || folder.contains(term, true)
     }
 }
 
@@ -96,7 +97,8 @@ fun volumeForSong(song: Song): String = song.mediaVolume.ifBlank {
 }
 
 enum class SongSort(val label: String) {
-    TITLE("Title"), ARTIST("Artist"), ALBUM("Album / track"), NEWEST("Recently added"), DURATION("Duration")
+    TITLE("Title"), ARTIST("Artist"), ALBUM("Album / track"), NEWEST("Recently added"), DURATION("Duration"),
+    YEAR_NEWEST("Year (newest first)"), YEAR_OLDEST("Year (oldest first)")
 }
 
 fun sortedSongs(songs: List<Song>, sort: SongSort): List<Song> = when (sort) {
@@ -105,6 +107,10 @@ fun sortedSongs(songs: List<Song>, sort: SongSort): List<Song> = when (sort) {
     SongSort.ALBUM -> songs.sortedWith(compareBy({ it.albumArtist.lowercase(Locale.ROOT) }, { it.album.lowercase(Locale.ROOT) }, { it.disc }, { it.track }, { it.title }))
     SongSort.NEWEST -> songs.sortedByDescending { it.modified }
     SongSort.DURATION -> songs.sortedByDescending { it.duration }
+    SongSort.YEAR_NEWEST -> songs.sortedWith(compareBy<Song> { taggedYear(it.year).isBlank() }
+        .thenByDescending { taggedYear(it.year).toIntOrNull() ?: 0 }.thenBy { it.title.lowercase(Locale.ROOT) })
+    SongSort.YEAR_OLDEST -> songs.sortedWith(compareBy<Song> { taggedYear(it.year).isBlank() }
+        .thenBy { taggedYear(it.year).toIntOrNull() ?: 0 }.thenBy { it.title.lowercase(Locale.ROOT) })
 }
 
 fun durationLabel(millis: Long): String {

@@ -14,9 +14,11 @@ data class EmbeddedTrackMetadata(val year: String = "", val catalogNumber: Strin
 
 object EmbeddedRatingTags {
     val extensions = setOf("MP3", "FLAC", "OGG", "OPUS", "M4A", "MP4", "WAV")
-    val metadataExtensions = setOf("MP3", "FLAC", "OGG", "OPUS", "WAV")
+    val metadataExtensions = setOf("MP3", "FLAC", "OGG", "OPUS", "WAV", "M4A", "MP4")
     private const val MAX_TAG = 64L * 1024 * 1024
     private const val MAX_PACKET = 8 * 1024 * 1024
+    private val metadataKeys = setOf("YEAR", "DATE", "ORIGINALYEAR", "ORIGINALDATE", "CATALOGNUMBER",
+        "CATALOGNO", "CATALOG", "CATALOGUENUMBER", "CATALOGUENO")
 
     fun read(input: InputStream, extension: String): Int? {
         val data = DataInputStream(input.buffered(16 * 1024))
@@ -34,8 +36,7 @@ object EmbeddedRatingTags {
         val values = mutableMapOf<String, MutableList<String>>()
         val fields: (String, String) -> Unit = { key, value ->
             val normalized = key.uppercase(Locale.ROOT).filter(Char::isLetterOrDigit)
-            if (normalized in setOf("YEAR", "DATE", "ORIGINALYEAR", "ORIGINALDATE", "CATALOGNUMBER",
-                    "CATALOGNO", "CATALOG", "CATALOGUENUMBER", "CATALOGUENO")) {
+            if (normalized in metadataKeys) {
                 values.getOrPut(normalized) { mutableListOf() }.add(value.trim('\u0000', '\uFEFF', ' ', '\r', '\n'))
             }
         }
@@ -45,6 +46,7 @@ object EmbeddedRatingTags {
             "FLAC" -> flac(data, fields)
             "OGG", "OPUS" -> ogg(data, fields)
             "WAV" -> wave(data, fields)
+            "M4A", "MP4" -> atoms(data, Long.MAX_VALUE, 0, fields)
             else -> throw IOException("Unsupported metadata-tag format: $extension")
         }
         val years = listOf("DATE", "YEAR", "ORIGINALDATE", "ORIGINALYEAR").flatMap { values[it].orEmpty() }
@@ -259,7 +261,7 @@ object EmbeddedRatingTags {
         return null
     }
 
-    private fun atoms(data: DataInputStream, length: Long, depth: Int): Int? {
+    private fun atoms(data: DataInputStream, length: Long, depth: Int, fields: ((String, String) -> Unit)? = null): Int? {
         if (depth > 8) throw IOException("MP4 metadata nesting is too deep")
         var left = length
         repeat(10_000) {
@@ -279,10 +281,11 @@ object EmbeddedRatingTags {
             val section = LimitedInput(data, size - headerSize)
             val nested = DataInputStream(section)
             val rating = when (type) {
-                "moov", "udta", "ilst" -> atoms(nested, section.remaining, depth + 1)
-                "meta" -> { nested.skipExact(4); atoms(nested, section.remaining, depth + 1) }
-                "----" -> freeform(nested, section.remaining)
-                "rate" -> mp4Rate(nested, section.remaining)
+                "moov", "udta", "ilst" -> atoms(nested, section.remaining, depth + 1, fields)
+                "meta" -> { nested.skipExact(4); atoms(nested, section.remaining, depth + 1, fields) }
+                "----" -> freeform(nested, section.remaining, fields)
+                "\u00a9day" -> if (fields != null) mp4Rate(nested, section.remaining, fields) else null
+                "rate" -> if (fields == null) mp4Rate(nested, section.remaining) else null
                 else -> null
             }
             if (rating != null) return rating
@@ -292,7 +295,7 @@ object EmbeddedRatingTags {
         throw IOException("Too many MP4 atoms")
     }
 
-    private fun freeform(data: DataInputStream, length: Long): Int? {
+    private fun freeform(data: DataInputStream, length: Long, fields: ((String, String) -> Unit)? = null): Int? {
         var left = length
         var owner = ""
         var name = ""
@@ -317,12 +320,19 @@ object EmbeddedRatingTags {
             } else data.skipExact(payload)
             left -= size
         }
-        if (owner != "com.apple.iTunes" || !name.equals("RATING", true)) return null
+        if (owner != "com.apple.iTunes") return null
+        if (fields != null) {
+            if (name.uppercase(Locale.ROOT).filter(Char::isLetterOrDigit) !in metadataKeys) return null
+            if (oversized) throw IOException("Oversized MP4 metadata value")
+            value?.let { fields(name, decode(it, Charsets.UTF_8).trimEnd('\u0000')) }
+            return null
+        }
+        if (!name.equals("RATING", true)) return null
         if (oversized) throw IOException("Oversized MP4 RATING value")
         return value?.let { percentageStars(decode(it, Charsets.UTF_8).trimEnd('\u0000')) }
     }
 
-    private fun mp4Rate(data: DataInputStream, length: Long): Int? {
+    private fun mp4Rate(data: DataInputStream, length: Long, fields: ((String, String) -> Unit)? = null): Int? {
         var left = length
         while (left >= 8) {
             val size = data.be32()
@@ -342,6 +352,7 @@ object EmbeddedRatingTags {
                     }
                     else -> throw IOException("Unsupported MP4 rating encoding")
                 }
+                if (fields != null) { fields("DATE", text); return null }
                 return percentageStars(text)
             }
             data.skipExact(payload)

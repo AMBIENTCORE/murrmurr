@@ -19,6 +19,36 @@ enum class LibraryCategory(val label: String) {
 
 data class LibraryGroup(val id: String, val name: String, val subtitle: String, val songs: List<Song>)
 
+enum class SearchSort(val label: String, val songSort: SongSort) {
+    ALPHABETICAL("Alphabetical", SongSort.TITLE),
+    YEAR_NEWEST("Year (newest first)", SongSort.YEAR_NEWEST),
+    YEAR_OLDEST("Year (oldest first)", SongSort.YEAR_OLDEST),
+}
+
+fun LibraryGroup.year(): Int? = songs.mapNotNull { taggedYear(it.year).toIntOrNull() }.minOrNull()
+
+fun searchGroups(songs: List<Song>, query: String, category: LibraryCategory, sort: SearchSort): List<LibraryGroup> {
+    require(category != LibraryCategory.SONGS) { "Song search does not use collections" }
+    val groups = if (category == LibraryCategory.FOLDERS) {
+        val roots = folderTree(songs)
+        folderRows(roots, folderIds(roots)).map { it.folder }.filter { it.children.isEmpty() }
+            .map { LibraryGroup(it.id, it.name, it.path, it.songs) }
+    } else libraryGroups(songs, category)
+    val terms = searchTerms(query)
+    val matches = groups.filter { group ->
+        matchesText(terms, group.name, group.subtitle) || group.songs.any { it.matchesTerms(terms) }
+    }
+    val alphabetical = compareBy<LibraryGroup> { it.name.lowercase(Locale.ROOT) }
+        .thenBy { it.subtitle.lowercase(Locale.ROOT) }.thenBy { it.id }
+    return when (sort) {
+        SearchSort.ALPHABETICAL -> matches.sortedWith(alphabetical)
+        SearchSort.YEAR_NEWEST -> matches.sortedWith(compareBy<LibraryGroup> { it.year() == null }
+            .thenByDescending { it.year() }.then(alphabetical))
+        SearchSort.YEAR_OLDEST -> matches.sortedWith(compareBy<LibraryGroup> { it.year() == null }
+            .thenBy { it.year() }.then(alphabetical))
+    }
+}
+
 data class SongDestination(val category: LibraryCategory, val value: String, val label: String)
 
 fun songDestinations(song: Song): List<SongDestination> = buildList {

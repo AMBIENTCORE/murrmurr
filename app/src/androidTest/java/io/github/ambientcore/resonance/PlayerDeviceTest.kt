@@ -71,6 +71,221 @@ class PlayerDeviceTest {
         }
     }
 
+    @Test fun indexedM4aCodecsPlayAndSeekOnDevice() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val byCodec = linkedMapOf<String, Song>()
+        context.contentResolver.query(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+            arrayOf("_id", "_display_name", "duration"), "_display_name LIKE ?", arrayOf("%.m4a"), null)?.use { cursor ->
+            while (cursor.moveToNext()) {
+                val uri = android.content.ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, cursor.getLong(0))
+                val header = context.contentResolver.openInputStream(uri)?.use { input ->
+                    val buffer = ByteArray(1024 * 1024)
+                    var read = 0
+                    while (read < buffer.size) {
+                        val count = input.read(buffer, read, buffer.size - read)
+                        if (count < 0) break
+                        read += count
+                    }
+                    buffer.copyOf(read)
+                }
+                    ?: error("Cannot open indexed M4A")
+                val text = header.toString(Charsets.ISO_8859_1)
+                val codec = when { "alac" in text -> "ALAC"; "mp4a" in text -> "AAC"; else -> "Other M4A" }
+                byCodec["$codec:${cursor.getLong(0)}"] =
+                    Song(uri.toString(), cursor.getString(1), fileName = cursor.getString(1), duration = cursor.getLong(2))
+            }
+        } ?: error("Cannot query the device M4A index")
+        org.junit.Assume.assumeTrue("Requires indexed device M4A files", byCodec.isNotEmpty())
+        println("M4A_CODECS: ${byCodec.keys}")
+        var scenario: ActivityScenario<MainActivity>? = null
+        try {
+            scenario = ActivityScenario.launch(MainActivity::class.java)
+            lateinit var model: MusicViewModel
+            scenario.onActivity { model = ViewModelProvider(it)[MusicViewModel::class.java] }
+            compose.waitUntil(10_000) { model.playing.value.connected }
+            val failures = mutableListOf<String>()
+            for ((mime, song) in byCodec) {
+                scenario.onActivity { model.play(listOf(song)) }
+                try {
+                    compose.waitUntil(10_000) { model.playing.value.song?.uri == song.uri &&
+                        model.playing.value.playing && model.playing.value.position in 300..5000 }
+                    scenario.onActivity { model.seek(song.duration / 2) }
+                    compose.waitUntil(10_000) { model.playing.value.playing &&
+                        model.playing.value.position >= song.duration / 2 - 1000 }
+                    println("M4A_PLAYBACK_OK: $mime")
+                } catch (error: ComposeTimeoutException) {
+                    failures += "M4A $mime failed: ${song.title}; ${model.playing.value}; ${model.audio.value}; ${model.library.value.message}"
+                }
+            }
+            assertTrue(failures.joinToString("\n"), failures.isEmpty())
+        } finally {
+            try { scenario?.close() } finally {
+                context.stopService(android.content.Intent(context, PlaybackService::class.java))
+            }
+        }
+    }
+
+    @Test fun searchCategoriesSortYearsAndPreserveCompleteCollections() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val repository = LibraryRepository(context)
+        val original = repository.load()
+        val file = File(context.filesDir, "resonance-qa-search.wav")
+        var scenario: ActivityScenario<MainActivity>? = null
+        try {
+            writeSilentWave(file)
+            val base = Song(Uri.fromFile(file).toString(), "Match Alpha", "Match Artist", "Alpha Album",
+                genre = "Match Rock; Match Electronic", year = "2001", duration = 30_000, folder = "Match Folder", fileName = file.name)
+            val songs = listOf(base, base.copy(uri = "${base.uri}#sibling", title = "Album sibling"),
+                base.copy(uri = "${base.uri}#beta", title = "Match Beta", album = "Beta Album", year = "1998"),
+                base.copy(uri = "${base.uri}#unknown", title = "Match Unknown", album = "Unknown Album", year = "0"))
+            repository.save(original.copy(songs = songs))
+            scenario = ActivityScenario.launch(MainActivity::class.java)
+            lateinit var model: MusicViewModel
+            scenario.onActivity {
+                it.window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                model = ViewModelProvider(it)[MusicViewModel::class.java]
+            }
+            compose.waitUntil(10_000) { !model.library.value.loading && model.localLibrary.value.data.songs == songs }
+            compose.onNodeWithContentDescription("Search", useUnmergedTree = true).performClick()
+            compose.onNodeWithTag("global-search").performTextInput("match")
+            compose.onNodeWithTag("global-search").performImeAction()
+            fun choose(category: LibraryCategory) {
+                compose.onNodeWithTag("search-category-menu").performClick()
+                compose.onNodeWithTag("search-category-${category.name}").performClick()
+                compose.onNodeWithTag("global-search").assertTextContains("match")
+            }
+            choose(LibraryCategory.ALBUMS)
+            compose.onNodeWithTag("view-mode-search").performClick()
+            compose.onNodeWithText("List").performClick()
+            fun titles() = compose.onAllNodesWithTag("search-group-${base.albumKey}").fetchSemanticsNodes()
+            assertEquals(1, titles().size)
+            compose.onNodeWithTag("search-sort-menu").performClick()
+            compose.onNodeWithTag("search-sort-YEAR_OLDEST").performClick()
+            val groups = compose.onAllNodes(hasTestTag("search-group-${base.albumKey}") or
+                hasTestTag("search-group-${songs[2].albumKey}") or hasTestTag("search-group-${songs[3].albumKey}"))
+                .fetchSemanticsNodes().sortedBy { it.boundsInRoot.top }
+            assertEquals(listOf("search-group-${songs[2].albumKey}", "search-group-${base.albumKey}",
+                "search-group-${songs[3].albumKey}"), groups.map { it.config[androidx.compose.ui.semantics.SemanticsProperties.TestTag] })
+            compose.onNodeWithTag("search-group-${base.albumKey}").performClick()
+            compose.onNodeWithTag("song-list").performScrollToNode(hasTestTag("track-${songs[1].uri}"))
+            compose.onNodeWithTag("track-${songs[1].uri}").assertIsDisplayed()
+            compose.onNodeWithContentDescription("Back to library").performClick()
+            choose(LibraryCategory.ARTISTS)
+            compose.onNodeWithTag("search-group-Match Artist").assertIsDisplayed()
+            choose(LibraryCategory.GENRES)
+            compose.onNodeWithTag("search-group-match rock").assertIsDisplayed()
+            compose.onNodeWithTag("search-group-match electronic").assertIsDisplayed()
+            choose(LibraryCategory.FOLDERS)
+            compose.onNodeWithText("Match Folder").assertIsDisplayed()
+            choose(LibraryCategory.SONGS)
+            compose.onNodeWithTag("track-${songs[0].uri}").assertIsDisplayed()
+            compose.onNodeWithTag("search-sort-menu").performClick()
+            compose.onNodeWithTag("search-sort-YEAR_NEWEST").performClick()
+            scenario.recreate()
+            compose.onNodeWithTag("global-search").assertTextContains("match")
+            compose.onNodeWithTag("search-sort-menu").assert(hasStateDescription(SearchSort.YEAR_NEWEST.label))
+        } finally {
+            try { scenario?.close() } finally {
+                context.stopService(android.content.Intent(context, PlaybackService::class.java))
+                repository.save(original)
+                check(!file.exists() || file.delete())
+            }
+        }
+    }
+
+    @Test fun invalidM4aShowsPersistentPlaybackErrorAndRetry() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val file = File(context.filesDir, "resonance-qa-invalid.m4a")
+        var scenario: ActivityScenario<MainActivity>? = null
+        try {
+            file.writeText("This is not an MPEG-4 audio file")
+            val song = Song(Uri.fromFile(file).toString(), "Invalid QA audio", fileName = file.name)
+            scenario = ActivityScenario.launch(MainActivity::class.java)
+            lateinit var model: MusicViewModel
+            scenario.onActivity {
+                it.window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                model = ViewModelProvider(it)[MusicViewModel::class.java]
+            }
+            compose.waitUntil(10_000) { model.playing.value.connected }
+            scenario.onActivity { model.play(listOf(song)) }
+            compose.waitUntil(15_000) { model.audio.value.playbackError.contains("M4A playback failed") }
+            compose.onNodeWithTag("mini-player").performClick()
+            compose.onNodeWithTag("playback-error").assertIsDisplayed()
+            compose.onNodeWithText("Retry").assertIsDisplayed()
+            assertTrue(model.audio.value.playbackError.contains("ERROR_CODE_"))
+            assertFalse(model.playing.value.playing)
+            writeSilentWave(file)
+            compose.onNodeWithText("Retry").performClick()
+            compose.waitUntil(15_000) { model.playing.value.playing && model.audio.value.playbackError.isBlank() }
+            compose.onNodeWithTag("playback-error").assertDoesNotExist()
+        } finally {
+            try { scenario?.close() } finally {
+                context.stopService(android.content.Intent(context, PlaybackService::class.java))
+                check(!file.exists() || file.delete())
+            }
+        }
+    }
+
+    @Test fun m4aFallsBackWhenTheFirstAacDecoderCannotInitialize() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        var uri: Uri? = null
+        context.contentResolver.query(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, arrayOf("_id"),
+            "_display_name LIKE ?", arrayOf("%.m4a"), null)?.use { cursor ->
+            while (uri == null && cursor.moveToNext()) {
+                val candidate = android.content.ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, cursor.getLong(0))
+                val extractor = android.media.MediaExtractor()
+                try {
+                    extractor.setDataSource(context, candidate, null)
+                    if ((0 until extractor.trackCount).any {
+                            extractor.getTrackFormat(it).getString(android.media.MediaFormat.KEY_MIME) == "audio/mp4a-latm"
+                        }) uri = candidate
+                } catch (error: java.io.IOException) {
+                    android.util.Log.i("MurrmurrQa", "Platform extractor cannot read this candidate M4A; checking the next one", error)
+                } finally { extractor.release() }
+            }
+        } ?: error("Cannot query M4A fixtures")
+        org.junit.Assume.assumeTrue("Requires an indexed AAC M4A", uri != null)
+        var scenario: ActivityScenario<MainActivity>? = null
+        var player: androidx.media3.exoplayer.ExoPlayer? = null
+        val started = java.util.concurrent.atomic.AtomicBoolean()
+        val queried = java.util.concurrent.atomic.AtomicBoolean()
+        val failed = java.util.concurrent.atomic.AtomicReference<androidx.media3.common.PlaybackException?>()
+        try {
+            scenario = ActivityScenario.launch(MainActivity::class.java)
+            scenario.onActivity {
+                val factory = PlaybackRenderersFactory(context) { EqualizerSettings().parameters() }
+                factory.setMediaCodecSelector { mime, secure, tunnel ->
+                    val available = androidx.media3.exoplayer.mediacodec.MediaCodecSelector.DEFAULT.getDecoderInfos(mime, secure, tunnel)
+                    if (mime != "audio/mp4a-latm" || available.isEmpty()) available else {
+                        queried.set(true)
+                        val codec = available.first()
+                        listOf(androidx.media3.exoplayer.mediacodec.MediaCodecInfo.newInstance(
+                            "murrmurr.qa.invalid.decoder", mime, codec.codecMimeType, codec.capabilities,
+                            codec.hardwareAccelerated, codec.softwareOnly, codec.vendor, false, false)) + available
+                    }
+                }
+                player = androidx.media3.exoplayer.ExoPlayer.Builder(context, factory).build().apply {
+                    addListener(object : androidx.media3.common.Player.Listener {
+                        override fun onIsPlayingChanged(isPlaying: Boolean) { if (isPlaying) started.set(true) }
+                        override fun onPlayerError(error: androidx.media3.common.PlaybackException) { failed.set(error) }
+                    })
+                    setMediaItem(androidx.media3.common.MediaItem.fromUri(requireNotNull(uri)))
+                    prepare()
+                    play()
+                }
+            }
+            compose.waitUntil(15_000) { started.get() || failed.get() != null }
+            assertNull("A broken primary AAC decoder must fall back: ${failed.get()}", failed.get())
+            assertTrue(queried.get())
+            assertTrue(started.get())
+        } finally {
+            scenario?.onActivity { player?.release() }
+            try { scenario?.close() } finally {
+                context.stopService(android.content.Intent(context, PlaybackService::class.java))
+            }
+        }
+    }
+
     @Test fun themesPersistAcrossRecreationAndNewLaunch() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val prefs = context.getSharedPreferences("playback", Context.MODE_PRIVATE)
@@ -941,10 +1156,11 @@ class PlayerDeviceTest {
             assertTrue("An unchanged scan should read no audio rows", unchanged.stats.indexRows <= 1)
 
             val legacyUri = "content://media/external/audio/media/${android.content.ContentUris.parseId(uri)}"
-            val legacy = inserted.copy(uri = legacyUri, mediaVolume = "")
+            val legacy = inserted.copy(uri = legacyUri, mediaVolume = "", year = "0")
             val legacyData = LibraryData(songs = listOf(legacy), favorites = setOf(legacyUri), ratings = mapOf(legacyUri to 5))
             val migrated = repository.scan(legacyData) {}
             assertEquals(legacyUri, migrated.songs.single { it.fileName == inserted.fileName }.uri)
+            assertEquals("", migrated.songs.single { it.fileName == inserted.fileName }.year)
             println("INDEX_BASELINE: ${initial.stats.summary}")
             println("INDEX_DELTA: ${delta.stats.summary}")
             println("INDEX_UNCHANGED: ${unchanged.stats.summary}")
@@ -952,7 +1168,7 @@ class PlayerDeviceTest {
             uri = null
             val refreshed = repository.scan(cached, ScanMode.REFRESH_INDEX) {}
             assertFalse(refreshed.songs.any { it.fileName == inserted.fileName })
-            assertEquals(0, refreshed.stats.audioFilesOpened)
+            assertEquals(cached.songs.count { taggedYear(it.year).isBlank() && it.uri != inserted.uri }, refreshed.stats.audioFilesOpened)
         } finally {
             uri?.let { context.contentResolver.delete(it, null, null) }
             check(fixture.delete())

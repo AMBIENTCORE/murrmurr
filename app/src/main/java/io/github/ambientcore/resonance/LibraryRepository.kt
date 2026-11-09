@@ -113,7 +113,20 @@ class LibraryRepository(private val context: Context, fileName: String = "librar
         val counters = DeepCounters()
         fun upsert(song: Song) {
             val existing = byPath[song.path] ?: found[song.uri]
-            val canonical = if (existing != null) song.copy(uri = existing.uri) else song
+            var canonical = if (existing != null) song.copy(uri = existing.uri,
+                year = taggedYear(song.year).ifBlank {
+                    if (song.modified == existing.modified && song.size == existing.size) taggedYear(existing.year) else ""
+                }) else song
+            if (mode != ScanMode.NEW_TRACKS && canonical.year.isBlank()) {
+                try {
+                    counters.opened++
+                    progress("Reading year tags: ${canonical.fileName}")
+                    canonical = canonical.copy(year = readYear(canonical))
+                } catch (error: Exception) {
+                    Log.w("ResonanceScan", "Cannot read year for ${canonical.fileName}", error)
+                    warnings += "Could not read year for ${canonical.fileName}: ${error.message}"
+                }
+            }
             found[canonical.uri] = canonical
             if (canonical.path.isNotBlank()) byPath[canonical.path] = canonical
         }
@@ -177,6 +190,19 @@ class LibraryRepository(private val context: Context, fileName: String = "librar
             indexQueries = indexQueries, indexRows = indexRows, audioFilesOpened = counters.opened,
             directoriesListed = counters.directories, elapsedMs = SystemClock.elapsedRealtime() - start,
         ))
+    }
+
+    internal fun readYear(song: Song): String {
+        if (song.extension in EmbeddedRatingTags.metadataExtensions) {
+            val input = context.contentResolver.openInputStream(Uri.parse(song.uri)) ?: throw IOException("Cannot open track tags")
+            return input.use { EmbeddedRatingTags.readMetadata(it, song.extension).year }
+        }
+        val metadata = MediaMetadataRetriever()
+        return try {
+            metadata.setDataSource(context, Uri.parse(song.uri))
+            taggedYear(metadata.extractMetadata(MediaMetadataRetriever.METADATA_KEY_YEAR),
+                metadata.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DATE))
+        } finally { metadata.release() }
     }
 
     private fun scanMediaStore(volume: String, after: Long?, through: Long): List<Song> {
