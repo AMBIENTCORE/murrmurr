@@ -53,7 +53,7 @@ NAS access is through Navidrome, not direct SMB or NFS shares.
 
 1. Download the [latest release APK](https://github.com/AMBIENTCORE/murrmurr/releases/latest)
    to your Android device. Files are named
-   `murmurr_<version>.apk`, for example `murmurr_0.9.11.apk`.
+   `murmurr_<version>.apk`, for example `murmurr_0.9.12.apk`.
 2. Open the APK from your browser's downloads or a file manager.
 3. If Android prompts you, allow that browser or file manager to
    **Install unknown apps**, then return to the APK.
@@ -61,6 +61,14 @@ NAS access is through Navidrome, not direct SMB or NFS shares.
 
 For updates, install the newer APK over the existing app rather than uninstalling
 first. Uninstalling removes app-local playlists, ratings and listening history.
+
+Release builds check GitHub for a newer stable version when opened (at most once
+per 15 minutes while running). **Update available** offers **Download** or
+**Later**. Download opens the official GitHub APK in your browser; Android still
+requires you to approve installation. Use **Settings > Check for updates** to
+check immediately. Update checks need internet access but never stop playback.
+Publish a higher version tag to trigger the prompt; replacing the APK under an
+unchanged version does not prompt again. Debug/QA builds do not check automatically.
 
 ## Usage
 

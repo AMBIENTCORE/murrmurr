@@ -71,6 +71,76 @@ class PlayerDeviceTest {
         }
     }
 
+    @Test fun githubUpdateChecksValidateApkVersionsAndPromptActions() {
+        fun release(version: String) = org.json.JSONObject()
+            .put("tag_name", "v$version").put("draft", false).put("prerelease", false)
+            .put("assets", org.json.JSONArray().put(org.json.JSONObject()
+                .put("name", "murmurr_$version.apk").put("state", "uploaded").put("size", 1234)
+                .put("browser_download_url", "https://github.com/AMBIENTCORE/murrmurr/releases/download/v$version/murmurr_$version.apk")))
+        val latest = release("0.9.99")
+        val update = requireNotNull(appUpdateFromJson(latest, "0.9.12"))
+        assertEquals("0.9.99", update.version)
+        assertNull(appUpdateFromJson(latest, "0.9.99"))
+        assertNull(appUpdateFromJson(latest, "1.0.0"))
+        assertNull(appUpdateFromJson(release("0.9.99").put("draft", true), "0.9.12"))
+        assertNull(appUpdateFromJson(release("0.9.99").put("prerelease", true), "0.9.12"))
+        val missing = release("0.9.99").put("assets", org.json.JSONArray())
+        assertThrows(java.io.IOException::class.java) { appUpdateFromJson(missing, "0.9.12") }
+        val external = release("0.9.99").apply {
+            getJSONArray("assets").getJSONObject(0).put("browser_download_url", "https://unrelated.example/app.apk")
+        }
+        assertThrows(java.io.IOException::class.java) { appUpdateFromJson(external, "0.9.12") }
+        val socket = java.net.ServerSocket(0, 1, java.net.InetAddress.getByName("127.0.0.1"))
+        val serverError = java.util.concurrent.atomic.AtomicReference<Throwable?>()
+        val worker = kotlin.concurrent.thread(name = "MurrmurrUpdateFixture") {
+            try {
+                socket.use { listener ->
+                    listener.accept().use { client ->
+                        client.soTimeout = 5000
+                        val reader = client.getInputStream().bufferedReader()
+                        while (reader.readLine()?.isNotEmpty() == true) { }
+                        val bytes = latest.toString().toByteArray()
+                        client.getOutputStream().apply {
+                            write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ${bytes.size}\r\nConnection: close\r\n\r\n".toByteArray())
+                            write(bytes)
+                            flush()
+                        }
+                    }
+                }
+            } catch (error: Throwable) { serverError.set(error) }
+        }
+        try {
+            assertEquals(update, latestAppUpdate("0.9.12", java.net.URL("http://127.0.0.1:${socket.localPort}/latest")))
+        } finally {
+            socket.close()
+            worker.join(6000)
+        }
+        assertNull(serverError.get())
+        var scenario: ActivityScenario<MainActivity>? = null
+        val shown = mutableStateOf(true)
+        var downloads = 0
+        try {
+            scenario = ActivityScenario.launch(MainActivity::class.java)
+            scenario.onActivity { activity ->
+                activity.setContent {
+                    MurrmurrTheme(AppTheme.CINDER) {
+                        if (shown.value) AppUpdateDialog(update, { shown.value = false }) { downloads++ }
+                    }
+                }
+            }
+            compose.onNodeWithText("Update available").assertIsDisplayed()
+            compose.onNodeWithText("Download").performClick()
+            assertEquals(1, downloads)
+            compose.onNodeWithText("Later").performClick()
+            compose.onNodeWithText("Update available").assertDoesNotExist()
+        } finally {
+            try { scenario?.close() } finally {
+                val context = InstrumentationRegistry.getInstrumentation().targetContext
+                context.stopService(android.content.Intent(context, PlaybackService::class.java))
+            }
+        }
+    }
+
     @Test fun indexedM4aCodecsPlayAndSeekOnDevice() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val byCodec = linkedMapOf<String, Song>()

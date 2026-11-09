@@ -42,6 +42,7 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
@@ -87,6 +88,8 @@ fun MurrmurrApp(model: MusicViewModel, requestPermission: () -> Unit) {
         val ratingImport by model.ratingImport.collectAsStateWithLifecycle()
         val playlistBatch by model.playlistBatch.collectAsStateWithLifecycle()
         val playlistCommit by model.playlistCommit.collectAsStateWithLifecycle()
+        val updates by model.updates.collectAsStateWithLifecycle()
+        val uriHandler = LocalUriHandler.current
         var tabs by rememberSaveable { mutableStateOf(listOf(0, 0)) }
         val tab = tabs[source.ordinal]
         var expanded by rememberSaveable { mutableStateOf(false) }
@@ -256,6 +259,20 @@ fun MurrmurrApp(model: MusicViewModel, requestPermission: () -> Unit) {
                 }
                 }
                 if (serverSetup.open) ServerSetupDialog(model)
+            }
+        }
+        updates.available?.let { update ->
+            AppUpdateDialog(update, model::dismissUpdate) {
+                try {
+                    uriHandler.openUri(update.apkUrl)
+                    model.dismissUpdate()
+                } catch (error: android.content.ActivityNotFoundException) {
+                    android.util.Log.w("MurrmurrUpdates", "No browser can open the update download", error)
+                    model.message("No browser available to download the update.")
+                } catch (error: IllegalArgumentException) {
+                    android.util.Log.w("MurrmurrUpdates", "Cannot open the update download", error)
+                    model.message("Could not open the update download.")
+                }
             }
         }
         playlistBatch?.let { preview ->
@@ -1098,6 +1115,7 @@ private fun Settings(model: MusicViewModel, data: LibraryData, permission: () ->
     val server by model.server.collectAsStateWithLifecycle()
     val ratingImport by model.ratingImport.collectAsStateWithLifecycle()
     val library by model.library.collectAsStateWithLifecycle()
+    val updates by model.updates.collectAsStateWithLifecycle()
     var confirmClearHistory by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp).padding(bottom = 36.dp)) {
         Text("Settings", fontSize = 25.sp, fontWeight = FontWeight.Bold)
@@ -1151,6 +1169,11 @@ private fun Settings(model: MusicViewModel, data: LibraryData, permission: () ->
             color = Muted, fontSize = 12.sp, lineHeight = 18.sp, modifier = Modifier.padding(top = 8.dp))
         TextButton(onClick = { confirmClearHistory = true }) { Text("Clear play history and counts") }
         Spacer(Modifier.height(24.dp))
+        TextButton(onClick = { model.checkForUpdates(manual = true) }, enabled = !updates.checking,
+            modifier = Modifier.testTag("check-for-updates")) {
+            Text(if (updates.checking) "Checking for updates..." else "Check for updates")
+        }
+        updates.error?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 11.sp) }
         Text("${stringResource(R.string.app_name)} ${BuildConfig.VERSION_NAME}", color = Muted, fontSize = 11.sp)
     }
     if (confirmClearHistory) AlertDialog(onDismissRequest = { confirmClearHistory = false },
@@ -1158,6 +1181,14 @@ private fun Settings(model: MusicViewModel, data: LibraryData, permission: () ->
         text = { Text("This removes device history and play counts for the selected source. Music files, ratings and playlists are unchanged.") },
         confirmButton = { TextButton(onClick = { model.clearHistory(); confirmClearHistory = false }) { Text("Clear") } },
         dismissButton = { TextButton(onClick = { confirmClearHistory = false }) { Text("Cancel") } })
+}
+
+@Composable
+internal fun AppUpdateDialog(update: AppUpdate, dismiss: () -> Unit, download: () -> Unit) {
+    AlertDialog(onDismissRequest = dismiss, title = { Text("Update available") },
+        text = { Text("murrmurr ${update.version} is available. Download the APK from GitHub and install it over this app to keep your data.") },
+        confirmButton = { TextButton(onClick = download) { Text("Download") } },
+        dismissButton = { TextButton(onClick = dismiss) { Text("Later") } })
 }
 
 @Composable

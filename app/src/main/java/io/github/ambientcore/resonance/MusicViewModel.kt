@@ -111,6 +111,10 @@ class MusicViewModel(application: Application) : AndroidViewModel(application), 
     val playing = mutablePlaying.asStateFlow()
     private val mutableAudio = MutableStateFlow(AudioUi())
     val audio = mutableAudio.asStateFlow()
+    private val mutableUpdates = MutableStateFlow(UpdateUi())
+    val updates = mutableUpdates.asStateFlow()
+    private var lastUpdateCheck: Long? = null
+    private var dismissedUpdate: String? = null
     private val mutableHistory = MutableStateFlow(HistoryUi())
     val history = combine(mutableHistory, mutableSource, mutableServer) { history, source, server ->
         history.copy(data = history.data.forSource(source, server.key))
@@ -190,6 +194,32 @@ class MusicViewModel(application: Application) : AndroidViewModel(application), 
                 controller?.let { mutablePlaying.value = mutablePlaying.value.copy(position = it.currentPosition.coerceAtLeast(0)) }
             }
         }
+    }
+
+    fun checkForUpdates(manual: Boolean = false) {
+        if (mutableUpdates.value.checking) return
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (!manual && lastUpdateCheck?.let { now - it < 15 * 60_000L } == true) return
+        lastUpdateCheck = now
+        mutableUpdates.update { it.copy(checking = true, error = null) }
+        viewModelScope.launch {
+            try {
+                val update = withContext(Dispatchers.IO) { latestAppUpdate() }
+                mutableUpdates.value = UpdateUi(available = update?.takeIf { manual || it.version != dismissedUpdate })
+                if (manual && update == null) message("You're using the latest version.")
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                Log.w("MurrmurrUpdates", "GitHub update check failed", error)
+                val text = "Could not check for updates: ${error.message}"
+                mutableUpdates.update { it.copy(checking = false, error = text) }
+                if (manual) message(text)
+            }
+        }
+    }
+
+    fun dismissUpdate() {
+        dismissedUpdate = mutableUpdates.value.available?.version
+        mutableUpdates.update { it.copy(available = null) }
     }
 
     fun rescan(mode: ScanMode = ScanMode.NEW_TRACKS) {

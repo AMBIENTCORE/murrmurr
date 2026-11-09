@@ -43,6 +43,11 @@ class MainActivity : ComponentActivity() {
         window.setBackgroundDrawable(ColorDrawable(background))
     }
 
+    override fun onStart() {
+        super.onStart()
+        if (!BuildConfig.DEBUG) model.checkForUpdates()
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
