@@ -53,7 +53,7 @@ NAS access is through Navidrome, not direct SMB or NFS shares.
 
 1. Download the [latest release APK](https://github.com/AMBIENTCORE/murrmurr/releases/latest)
    to your Android device. Files are named
-   `murmurr_<version>.apk`, for example `murmurr_0.9.16.apk`.
+   `murmurr_<version>.apk`, for example `murmurr_0.9.17.apk`.
 2. Open the APK from your browser's downloads or a file manager.
 3. If Android prompts you, allow that browser or file manager to
    **Install unknown apps**, then return to the APK.
@@ -165,10 +165,14 @@ years when Android's index omits them. The fast new-track scan remains index-onl
 ### Audio formats
 
 M4A is a container that may hold AAC or Apple Lossless (ALAC) audio.
-ALAC now has a bundled software decoder; it does not require the device to
-provide one. Device decoders remain preferred where supported, with alternate
-device decoders available when initialization fails. The bundled FFmpeg audio
-extension also covers AAC, MP3, FLAC, Vorbis, Opus, AMR, AC-3, E-AC-3, DTS,
+Bundled software decoders are preferred for supported audio formats on every
+device, including AAC and Apple Lossless. Playback does not depend on a vendor
+decoder merely advertising support: platform initialization fallback does not
+automatically switch to a different renderer after failure. Software decoding
+can use more CPU than platform decoding; consistent playback is the priority.
+Android decoders remain available for other formats, with alternate platform
+decoders tried when initialization fails. The FFmpeg audio extension also covers
+MP3, FLAC, Vorbis, Opus, AMR, AC-3, E-AC-3, DTS,
 TrueHD and G.711 in containers supported by Media3. PCM WAV uses Media3 directly.
 This is not a guarantee for every container, proprietary codec or DRM format.
 

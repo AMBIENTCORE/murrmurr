@@ -356,13 +356,30 @@ class PlayerDeviceTest {
         }
     }
 
-    private fun assertNonSilentPcmAndSeeking(samples: Map<String, Song>) {
+    @Test fun m4aUsesBundledDecoderWhenAdvertisedPlatformDecoderIsBroken() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val file = File(instrumentation.targetContext.cacheDir, "qa-broken-platform-aac.m4a")
+        try {
+            instrumentation.context.assets.open("audio/tone-aac.m4a").use { input ->
+                file.outputStream().use { input.copyTo(it) }
+            }
+            val song = Song(Uri.fromFile(file).toString(), "Broken platform AAC", fileName = file.name, duration = 4000)
+            assertNonSilentPcmAndSeeking(mapOf("AAC with broken advertised platform decoder" to song),
+                brokenPlatformDecoder = true)
+        } finally {
+            check(!file.exists() || file.delete())
+        }
+    }
+
+    private fun assertNonSilentPcmAndSeeking(samples: Map<String, Song>, brokenPlatformDecoder: Boolean = false) {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val bytes = java.util.concurrent.atomic.AtomicLong()
         val nonSilent = java.util.concurrent.atomic.AtomicBoolean()
         val minimumTimestamp = java.util.concurrent.atomic.AtomicLong()
         val requiredBytes = java.util.concurrent.atomic.AtomicLong(44_100)
         val outputRate = java.util.concurrent.atomic.AtomicInteger()
+        val decoderName = java.util.concurrent.atomic.AtomicReference("")
+        val platformAdvertised = java.util.concurrent.atomic.AtomicBoolean()
         val failed = java.util.concurrent.atomic.AtomicReference<androidx.media3.common.PlaybackException?>()
         var scenario: ActivityScenario<MainActivity>? = null
         var player: androidx.media3.exoplayer.ExoPlayer? = null
@@ -403,12 +420,29 @@ class PlayerDeviceTest {
                             }
                         }
                 }
-                factory.setMediaCodecSelector { _, _, _ -> emptyList() }
+                factory.setMediaCodecSelector { mime, secure, tunnel ->
+                    if (!brokenPlatformDecoder) emptyList() else {
+                        val available = androidx.media3.exoplayer.mediacodec.MediaCodecSelector.DEFAULT
+                            .getDecoderInfos(mime, secure, tunnel)
+                        if (mime != "audio/mp4a-latm") available else {
+                            val codec = checkNotNull(available.firstOrNull()) { "AAC platform support is required for this regression" }
+                            platformAdvertised.set(true)
+                            listOf(androidx.media3.exoplayer.mediacodec.MediaCodecInfo.newInstance(
+                                "murrmurr.qa.broken.advertised.aac", mime, codec.codecMimeType, codec.capabilities,
+                                true, false, true, false, false))
+                        }
+                    }
+                }
                 player = androidx.media3.exoplayer.ExoPlayer.Builder(context, factory).build().apply {
                     addListener(object : androidx.media3.common.Player.Listener {
                         override fun onPlayerError(error: androidx.media3.common.PlaybackException) { failed.set(error) }
                     })
                     addAnalyticsListener(object : androidx.media3.exoplayer.analytics.AnalyticsListener {
+                        override fun onAudioDecoderInitialized(
+                            eventTime: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime,
+                            name: String, initializedTimestampMs: Long, initializationDurationMs: Long) {
+                            decoderName.set(name)
+                        }
                         override fun onAudioTrackInitialized(
                             eventTime: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime,
                             audioTrackConfig: androidx.media3.exoplayer.audio.AudioSink.AudioTrackConfig) {
@@ -421,7 +455,7 @@ class PlayerDeviceTest {
             for ((codec, song) in samples) {
                 scenario.onActivity {
                     requireNotNull(player).stop()
-                    minimumTimestamp.set(0); bytes.set(0); nonSilent.set(false); failed.set(null)
+                    minimumTimestamp.set(0); bytes.set(0); nonSilent.set(false); failed.set(null); decoderName.set("")
                     requireNotNull(player).setMediaItem(song.mediaItem())
                     requireNotNull(player).prepare()
                     requireNotNull(player).play()
@@ -439,6 +473,11 @@ class PlayerDeviceTest {
                     assertNull("$codec: ${failed.get()}", failed.get())
                     assertTrue("$codec must write non-silent decoded PCM to the audio sink", nonSilent.get())
                     assertTrue("$codec must initialize real audio output", outputRate.get() > 0)
+                    if (brokenPlatformDecoder) {
+                        assertTrue("The platform must advertise support for this regression", platformAdvertised.get())
+                        assertTrue("Bundled decoder must win over the advertised platform decoder: ${decoderName.get()}",
+                            decoderName.get().startsWith("ffmpeg"))
+                    }
                 }
                 awaitPcm()
                 val midpoint = song.duration / 2
@@ -449,7 +488,8 @@ class PlayerDeviceTest {
                     requireNotNull(player).seekTo(midpoint)
                 }
                 awaitPcm()
-                println("AUDIO_PCM_AND_SEEK_OK: $codec; ${song.title}; ${outputRate.get()} Hz")
+                println("AUDIO_PCM_AND_SEEK_OK: $codec; ${song.title}; ${outputRate.get()} Hz; " +
+                    "decoder=${decoderName.get().ifBlank { "not reported" }}")
             }
         } finally {
             scenario?.onActivity { player?.release() }
@@ -853,6 +893,7 @@ class PlayerDeviceTest {
             scenario = ActivityScenario.launch(MainActivity::class.java)
             scenario.onActivity {
                 val factory = PlaybackRenderersFactory(context) { EqualizerSettings().parameters() }
+                factory.setExtensionRendererMode(androidx.media3.exoplayer.DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF)
                 factory.setMediaCodecSelector { mime, secure, tunnel ->
                     val available = androidx.media3.exoplayer.mediacodec.MediaCodecSelector.DEFAULT.getDecoderInfos(mime, secure, tunnel)
                     if (mime != "audio/mp4a-latm" || available.isEmpty()) available else {

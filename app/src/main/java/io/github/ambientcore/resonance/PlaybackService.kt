@@ -106,6 +106,10 @@ class PlaybackService : MediaSessionService() {
             shuffleModeEnabled = prefs.getBoolean("shuffle", false)
         }
         player.addAnalyticsListener(object : AnalyticsListener {
+            override fun onAudioDecoderInitialized(eventTime: AnalyticsListener.EventTime, decoderName: String,
+                initializedTimestampMs: Long, initializationDurationMs: Long) {
+                Log.i("ResonanceOutput", "Audio decoder: $decoderName")
+            }
             override fun onAudioTrackInitialized(eventTime: AnalyticsListener.EventTime, audioTrackConfig: AudioSink.AudioTrackConfig) {
                 val description = "${audioEncodingLabel(audioTrackConfig.encoding)} / ${audioTrackConfig.sampleRate / 1000f} kHz"
                 Log.i("ResonanceOutput", "AudioTrack: $description; floating-point tone processing")
@@ -360,7 +364,8 @@ internal open class PlaybackRenderersFactory(context: Context, private val param
     DefaultRenderersFactory(context) {
     init {
         setEnableDecoderFallback(true)
-        setExtensionRendererMode(EXTENSION_RENDERER_MODE_ON)
+        // Initialization fallback does not switch from a failed platform renderer to FFmpeg.
+        setExtensionRendererMode(EXTENSION_RENDERER_MODE_PREFER)
     }
     override fun buildAudioSink(context: Context, enableFloatOutput: Boolean, enableAudioTrackPlaybackParams: Boolean): AudioSink =
         EqualizerAudioSink(DefaultAudioSink.Builder(context).setEnableFloatOutput(true).build(), parameters)
