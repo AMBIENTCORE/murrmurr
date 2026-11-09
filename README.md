@@ -53,7 +53,7 @@ NAS access is through Navidrome, not direct SMB or NFS shares.
 
 1. Download the [latest release APK](https://github.com/AMBIENTCORE/murrmurr/releases/latest)
    to your Android device. Files are named
-   `murmurr_<version>.apk`, for example `murmurr_0.9.13.apk`.
+   `murmurr_<version>.apk`, for example `murmurr_0.9.14.apk`.
 2. Open the APK from your browser's downloads or a file manager.
 3. If Android prompts you, allow that browser or file manager to
    **Install unknown apps**, then return to the APK.
@@ -121,6 +121,8 @@ controls; portrait and narrow windows stack them vertically. Now Playing keeps
 metadata and playback controls on one screen, sizing the artwork to fill the
 remaining space without scrolling. Short windows use compact metadata, and long
 text is ellipsized; full metadata remains available in **Track information**.
+Both progress bars advance at the display frame rate between player position
+samples. Pausing, buffering and seeking update the position immediately.
 Library icon grids add columns on wider windows, and tablet list actions retain
 48 dp touch targets.
 

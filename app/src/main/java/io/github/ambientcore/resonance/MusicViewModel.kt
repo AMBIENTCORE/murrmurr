@@ -57,6 +57,8 @@ data class PlayingUi(
     val index: Int = 0,
     val shuffle: Boolean = false,
     val repeat: Int = Player.REPEAT_MODE_OFF,
+    val positionSampleTimeMs: Long = 0,
+    val playbackSpeed: Float = 1f,
 )
 
 data class AudioUi(
@@ -191,7 +193,11 @@ class MusicViewModel(application: Application) : AndroidViewModel(application), 
         viewModelScope.launch {
             while (true) {
                 delay(500)
-                controller?.let { mutablePlaying.value = mutablePlaying.value.copy(position = it.currentPosition.coerceAtLeast(0)) }
+                controller?.takeIf { it.isPlaying }?.let {
+                    mutablePlaying.value = mutablePlaying.value.copy(position = it.currentPosition.coerceAtLeast(0),
+                        positionSampleTimeMs = android.os.SystemClock.elapsedRealtime(),
+                        playbackSpeed = it.playbackParameters.speed)
+                }
             }
         }
     }
@@ -589,7 +595,9 @@ class MusicViewModel(application: Application) : AndroidViewModel(application), 
     }
     fun next() { controller?.seekToNextMediaItem() }
     fun previous() { controller?.let { if (it.currentPosition > 3000) it.seekTo(0) else it.seekToPreviousMediaItem() } }
-    fun seek(position: Long) { controller?.seekTo(position) }
+    fun seek(position: Long) {
+        controller?.let { it.seekTo(position); updatePlaying() }
+    }
     fun shuffle() { controller?.let { it.shuffleModeEnabled = !it.shuffleModeEnabled } }
     fun repeat() { controller?.let { it.repeatMode = when (it.repeatMode) { Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL; Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE; else -> Player.REPEAT_MODE_OFF } } }
     fun queue(song: Song, next: Boolean = false) {
@@ -617,7 +625,8 @@ class MusicViewModel(application: Application) : AndroidViewModel(application), 
         mutablePlaying.value = PlayingUi(true, songs.getOrNull(control.currentMediaItemIndex), control.isPlaying,
             control.playbackState == Player.STATE_BUFFERING, control.currentPosition.coerceAtLeast(0),
             control.duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: songs.getOrNull(control.currentMediaItemIndex)?.duration ?: 0,
-            songs, control.currentMediaItemIndex, control.shuffleModeEnabled, control.repeatMode)
+            songs, control.currentMediaItemIndex, control.shuffleModeEnabled, control.repeatMode,
+            android.os.SystemClock.elapsedRealtime(), control.playbackParameters.speed)
     }
 
     private fun updateAudio() {

@@ -904,6 +904,7 @@ private fun PlaylistCard(playlist: MusicPlaylist, songs: List<Song>, mode: Brows
 private fun MiniPlayer(model: MusicViewModel, expand: () -> Unit) {
     val state by model.playing.collectAsStateWithLifecycle()
     val song = state.song ?: return
+    val position = rememberPlaybackPosition(state)
     Column(Modifier.padding(horizontal = 12.dp).clip(RoundedCornerShape(12.dp)).background(InputSurface).clickable(onClick = expand).testTag("mini-player")) {
         Row(Modifier.fillMaxWidth().padding(start = 8.dp, top = 6.dp, bottom = 6.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             Artwork(song, Modifier.size(42.dp))
@@ -914,8 +915,9 @@ private fun MiniPlayer(model: MusicViewModel, expand: () -> Unit) {
             IconButton(onClick = model::togglePlay) { Icon(if (state.playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, if (state.playing) "Pause" else "Play", tint = Pink) }
             IconButton(onClick = model::next) { Icon(Icons.Rounded.SkipNext, "Next track", tint = Cyan) }
         }
-        LinearProgressIndicator(progress = { if (state.duration > 0) (state.position.toFloat() / state.duration).coerceIn(0f, 1f) else 0f },
-            modifier = Modifier.fillMaxWidth().height(2.dp), color = Lime, trackColor = Surface, drawStopIndicator = {})
+        LinearProgressIndicator(progress = { if (state.duration > 0) (position.value.toFloat() / state.duration).coerceIn(0f, 1f) else 0f },
+            modifier = Modifier.fillMaxWidth().height(2.dp).testTag("mini-player-progress"),
+            color = Lime, trackColor = Surface, drawStopIndicator = {})
     }
 }
 
@@ -1074,17 +1076,8 @@ private fun NowPlayingMetadata(song: Song?, audio: AudioUi, compact: Boolean, de
 
 @Composable
 private fun NowPlayingControls(state: PlayingUi, model: MusicViewModel) {
-    var seeking by remember(state.song?.uri) { mutableStateOf<Float?>(null) }
     Column(Modifier.fillMaxWidth().requiredHeight(108.dp).testTag("now-playing-controls")) {
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-    Text(durationLabel(seeking?.toLong() ?: state.position), color = Muted, fontSize = 11.sp, maxLines = 1)
-    Slider(value = seeking ?: state.position.toFloat().coerceIn(0f, state.duration.coerceAtLeast(1).toFloat()),
-        onValueChange = { seeking = it }, onValueChangeFinished = { seeking?.let { model.seek(it.toLong()) }; seeking = null },
-        valueRange = 0f..state.duration.coerceAtLeast(1).toFloat(), enabled = state.duration > 0,
-        modifier = Modifier.weight(1f).testTag("now-playing-seek"),
-        colors = SliderDefaults.colors(thumbColor = Pink, activeTrackColor = Cyan, inactiveTrackColor = Surface))
-        Text(durationLabel(state.duration), color = Muted, fontSize = 11.sp, maxLines = 1)
-    }
+    PlaybackSeekbar(state, model::seek)
     Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceEvenly) {
         IconButton(onClick = model::shuffle, modifier = Modifier.size(48.dp).semantics { stateDescription = if (state.shuffle) "On" else "Off" }) {
@@ -1105,6 +1098,22 @@ private fun NowPlayingControls(state: PlayingUi, model: MusicViewModel) {
                 "Cycle repeat mode", tint = if (state.repeat == Player.REPEAT_MODE_OFF) Muted else Lime)
         }
     }
+    }
+}
+
+@Composable
+private fun PlaybackSeekbar(state: PlayingUi, seek: (Long) -> Unit) {
+    val position by rememberPlaybackPosition(state)
+    var seeking by remember(state.song?.uri) { mutableStateOf<Float?>(null) }
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(durationLabel(seeking?.toLong() ?: if (state.duration > 0) position else state.position),
+            color = Muted, fontSize = 11.sp, maxLines = 1)
+        Slider(value = seeking ?: position.toFloat().coerceIn(0f, state.duration.coerceAtLeast(1).toFloat()),
+            onValueChange = { seeking = it }, onValueChangeFinished = { seeking?.let { seek(it.toLong()) }; seeking = null },
+            valueRange = 0f..state.duration.coerceAtLeast(1).toFloat(), enabled = state.duration > 0,
+            modifier = Modifier.weight(1f).testTag("now-playing-seek"),
+            colors = SliderDefaults.colors(thumbColor = Pink, activeTrackColor = Cyan, inactiveTrackColor = Surface))
+        Text(durationLabel(state.duration), color = Muted, fontSize = 11.sp, maxLines = 1)
     }
 }
 

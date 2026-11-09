@@ -71,6 +71,107 @@ class PlayerDeviceTest {
         }
     }
 
+    @Test fun progressMovesEveryFrameWithoutNewPlayerSamplesAndStopsWhenPaused() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val source = mutableStateOf(PlayingUi(connected = true, playing = true,
+            song = Song("content://qa/progress", "Frame progress"), position = 1000, duration = 10_000))
+        var scenario: ActivityScenario<MainActivity>? = null
+        try {
+            compose.mainClock.autoAdvance = false
+            scenario = ActivityScenario.launch(MainActivity::class.java)
+            scenario.onActivity { activity ->
+                activity.setContent {
+                    MurrmurrTheme(AppTheme.CINDER) {
+                        val position = rememberPlaybackPosition(source.value) { compose.mainClock.currentTime }
+                        androidx.compose.material3.Text(position.value.toString(), Modifier.testTag("frame-position"))
+                    }
+                }
+            }
+            fun value(): Long = compose.onNodeWithTag("frame-position").fetchSemanticsNode()
+                .config[androidx.compose.ui.semantics.SemanticsProperties.Text].single().text.toLong()
+            compose.mainClock.advanceTimeByFrame()
+            compose.mainClock.advanceTimeByFrame()
+            var previous = value()
+            val increments = mutableListOf<Long>()
+            repeat(12) {
+                compose.mainClock.advanceTimeByFrame()
+                val next = value()
+                increments += next - previous
+                previous = next
+            }
+            assertTrue("Every frame must advance without a 500 ms player tick: $increments",
+                increments.all { it in 1..32 })
+            assertEquals("The source position has not been polled again", 1000L, source.value.position)
+            compose.runOnIdle {
+                source.value = source.value.copy(playing = false, position = 2200,
+                    positionSampleTimeMs = compose.mainClock.currentTime)
+            }
+            compose.mainClock.advanceTimeByFrame()
+            compose.mainClock.advanceTimeByFrame()
+            assertEquals(2200L, value())
+            compose.mainClock.advanceTimeBy(300)
+            assertEquals(2200L, value())
+            compose.runOnIdle {
+                source.value = source.value.copy(playing = true, buffering = true, position = 2500,
+                    positionSampleTimeMs = compose.mainClock.currentTime)
+            }
+            compose.mainClock.advanceTimeBy(300)
+            assertEquals(2500L, value())
+            compose.runOnIdle {
+                source.value = source.value.copy(song = Song("content://qa/next-progress", "Next"),
+                    playing = false, buffering = false, position = 0, positionSampleTimeMs = compose.mainClock.currentTime)
+            }
+            compose.mainClock.advanceTimeByFrame()
+            compose.mainClock.advanceTimeByFrame()
+            assertEquals(0L, value())
+        } finally {
+            compose.mainClock.autoAdvance = true
+            try { scenario?.close() } finally {
+                context.stopService(android.content.Intent(context, PlaybackService::class.java))
+            }
+        }
+    }
+
+    @Test fun draggingPlaybackProgressSeeksImmediatelyAndStaysStillWhenPaused() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val file = File(context.filesDir, "resonance-qa-smooth-seek.wav")
+        var scenario: ActivityScenario<MainActivity>? = null
+        try {
+            writeSilentWave(file)
+            val song = Song(Uri.fromFile(file).toString(), "Smooth seek QA", duration = 30_000, fileName = file.name)
+            scenario = ActivityScenario.launch(MainActivity::class.java)
+            lateinit var model: MusicViewModel
+            scenario.onActivity {
+                it.window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                model = ViewModelProvider(it)[MusicViewModel::class.java]
+            }
+            compose.waitUntil(10_000) { model.playing.value.connected }
+            scenario.onActivity { model.play(listOf(song)) }
+            compose.waitUntil(10_000) { model.playing.value.playing }
+            compose.onNodeWithTag("mini-player").performClick()
+            scenario.onActivity { model.togglePlay(); model.seek(3000) }
+            compose.waitUntil(5000) { !model.playing.value.playing && model.playing.value.position == 3000L }
+            fun progress(): Float = compose.onNodeWithTag("now-playing-seek").fetchSemanticsNode()
+                .config[androidx.compose.ui.semantics.SemanticsProperties.ProgressBarRangeInfo].current
+            assertEquals(3000f, progress(), 1f)
+            compose.onNodeWithTag("now-playing-seek").performTouchInput {
+                swipe(androidx.compose.ui.geometry.Offset(width * .2f, height / 2f),
+                    androidx.compose.ui.geometry.Offset(width * .7f, height / 2f), 300)
+            }
+            compose.waitUntil(5000) { model.playing.value.position in 19_000..23_000 }
+            val pausedPosition = model.playing.value.position
+            assertEquals(pausedPosition.toFloat(), progress(), 1f)
+            compose.mainClock.advanceTimeBy(700)
+            assertEquals(pausedPosition.toFloat(), progress(), 1f)
+            assertFalse(model.playing.value.playing)
+        } finally {
+            try { scenario?.close() } finally {
+                context.stopService(android.content.Intent(context, PlaybackService::class.java))
+                check(!file.exists() || file.delete())
+            }
+        }
+    }
+
     @Test fun githubUpdateChecksValidateApkVersionsAndPromptActions() {
         fun release(version: String) = org.json.JSONObject()
             .put("tag_name", "v$version").put("draft", false).put("prerelease", false)
