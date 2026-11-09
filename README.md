@@ -53,7 +53,7 @@ NAS access is through Navidrome, not direct SMB or NFS shares.
 
 1. Download the [latest release APK](https://github.com/AMBIENTCORE/murrmurr/releases/latest)
    to your Android device. Files are named
-   `murmurr_<version>.apk`, for example `murmurr_0.9.14.apk`.
+   `murmurr_<version>.apk`, for example `murmurr_0.9.15.apk`.
 2. Open the APK from your browser's downloads or a file manager.
 3. If Android prompts you, allow that browser or file manager to
    **Install unknown apps**, then return to the APK.
@@ -136,10 +136,47 @@ The sort icon offers **Alphabetical**, **Year (newest first)**, and
 earliest known track year. Use **Refresh tags / remove missing** to populate
 years when Android's index omits them. The fast new-track scan remains index-only.
 
-M4A is a container that may hold AAC or ALAC audio; decoding uses the device's
-supported codecs, with fallback to another available decoder when initialization
-fails. Playback errors remain visible in Now Playing with a **Retry** action and
-an error code. Unsupported or damaged files are not silently skipped.
+### Audio formats
+
+M4A is a container that may hold AAC or Apple Lossless (ALAC) audio.
+ALAC now has a bundled software decoder; it does not require the device to
+provide one. Device decoders remain preferred where supported, with alternate
+device decoders available when initialization fails. The bundled FFmpeg audio
+extension also covers AAC, MP3, FLAC, Vorbis, Opus, AMR, AC-3, E-AC-3, DTS,
+TrueHD and G.711 in containers supported by Media3. PCM WAV uses Media3 directly.
+This is not a guarantee for every container, proprietary codec or DRM format.
+
+Playback must select an audio track; a moving timer without a playable audio
+track is an error, not successful playback. Video and cover-image tracks are
+not rendered as music. Errors remain visible in Now Playing
+with a **Retry** action and an error code. Unsupported or damaged files are not
+silently skipped.
+
+The FFmpeg extension in `app/libs` is built from pinned upstream sources using
+`tools/build-ffmpeg-decoder.ps1` on Windows with Git for Windows, JDK 17+ and
+Android NDK `28.2.13676358`. Install the NDK through the Android SDK manager,
+set `ANDROID_HOME`, then run the script before rebuilding the app to replace or
+modify the library. It builds all four Android ABIs with 16 KB page alignment.
+FFmpeg is LGPL-2.1-or-later, without GPL/nonfree components; Media3 is Apache-2.0.
+The included Media3 JNI patch initializes TrueHD channel layouts, retains them
+when seeking, splits grouped access units, and preserves earlier PCM when growing
+output buffers.
+The application source retains its MIT license. License texts and exact source
+links are included in the APK's `assets/licenses`. Distributors must also provide
+the corresponding library sources and build/relinking instructions with their
+binary downloads. The script also produces `app/libs/ffmpeg-decoder-sources.zip`
+for that purpose; publish it alongside APKs containing this decoder.
+
+Device tests require the isolated `.qa` debug package, never the installed
+release app. Audio regressions require non-silent PCM reaching the real audio
+sink before and after seeking, including with all platform decoders disabled.
+Original synthetic tone fixtures cover 13 codec/container combinations; recreate
+them with `tools/generate-audio-fixtures.ps1 -Ffmpeg <path-to-ffmpeg.exe>`.
+To verify a specific indexed M4A album, run the two
+`indexedM4aCodecsPlayAndSeekOnDevice` and
+`softwareDecodersProduceNonSilentPcmAndSeekForIndexedM4a` device tests with runner
+arguments `audioAlbum` and `audioExpectedTracks`. Missing requested tracks fail
+the tests rather than silently skipping verification.
 
 ### NAS / Navidrome
 

@@ -12,8 +12,8 @@ android {
         applicationId = "io.github.ambientcore.resonance"
         minSdk = 30
         targetSdk = 36
-        versionCode = 30
-        versionName = "0.9.14"
+        versionCode = 31
+        versionName = "0.9.15"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     buildFeatures { compose = true; buildConfig = true }
@@ -54,6 +54,8 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.4")
     implementation("androidx.media3:media3-exoplayer:1.8.0")
     implementation("androidx.media3:media3-session:1.8.0")
+    implementation("androidx.media3:media3-decoder:1.8.0")
+    implementation(files("libs/media3-ffmpeg-decoder-1.8.0-lgpl.aar"))
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation(platform("androidx.compose:compose-bom:2025.10.00"))

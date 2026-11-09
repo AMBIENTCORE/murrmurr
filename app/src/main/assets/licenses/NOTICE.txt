@@ -1,0 +1,23 @@
+FFmpeg audio decoding
+
+This application includes FFmpeg 6.1.4, licensed under LGPL 2.1 or later,
+and the AndroidX Media3 1.8.0 FFmpeg extension, licensed under Apache 2.0.
+The application source remains MIT licensed. FFmpeg was built without
+GPL or nonfree components. There is no warranty for these libraries.
+The Media3 JNI integration is modified to initialize and retain TrueHD channel
+layouts, split grouped access units, log FFmpeg errors, and preserve decoded
+PCM when its output buffer grows. The corresponding
+patch is included in ffmpeg-decoder-sources.zip and the application repository.
+
+Corresponding sources:
+https://github.com/FFmpeg/FFmpeg/tree/34277e12e80031c7f89494ba543684bc1dd0be8f
+https://github.com/androidx/media/tree/b7bbc6e2bc3e45ff3ed99884c114c50f03bba5c9/libraries/decoder_ffmpeg
+
+Build and relinking instructions:
+https://github.com/AMBIENTCORE/murrmurr/blob/HEAD/tools/build-ffmpeg-decoder.ps1
+
+Library modifications for personal use and reverse engineering for debugging
+such modifications are permitted under the LGPL. The build script recompiles
+and relinks the native library from source; the application can then be rebuilt
+with that replacement library. Retain the accompanying license texts when
+redistributing.

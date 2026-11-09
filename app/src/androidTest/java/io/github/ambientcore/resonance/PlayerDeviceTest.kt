@@ -263,11 +263,14 @@ class PlayerDeviceTest {
         }
     }
 
-    @Test fun indexedM4aCodecsPlayAndSeekOnDevice() {
+    private fun indexedM4aSamples(): Map<String, Song> {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val byCodec = linkedMapOf<String, Song>()
+        val album = InstrumentationRegistry.getArguments().getString("audioAlbum")
         context.contentResolver.query(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
-            arrayOf("_id", "_display_name", "duration"), "_display_name LIKE ?", arrayOf("%.m4a"), null)?.use { cursor ->
+            arrayOf("_id", "_display_name", "duration"),
+            "_display_name LIKE ?" + if (album != null) " AND album = ?" else "",
+            if (album != null) arrayOf("%.m4a", album) else arrayOf("%.m4a"), null)?.use { cursor ->
             while (cursor.moveToNext()) {
                 val uri = android.content.ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, cursor.getLong(0))
                 val header = context.contentResolver.openInputStream(uri)?.use { input ->
@@ -287,8 +290,18 @@ class PlayerDeviceTest {
                     Song(uri.toString(), cursor.getString(1), fileName = cursor.getString(1), duration = cursor.getLong(2))
             }
         } ?: error("Cannot query the device M4A index")
-        org.junit.Assume.assumeTrue("Requires indexed device M4A files", byCodec.isNotEmpty())
+        if (album != null) assertTrue("No M4A tracks found for requested album $album", byCodec.isNotEmpty())
+        else org.junit.Assume.assumeTrue("Requires indexed device M4A files", byCodec.isNotEmpty())
+        InstrumentationRegistry.getArguments().getString("audioExpectedTracks")?.let {
+            assertEquals("All requested album tracks must be tested", it.toInt(), byCodec.size)
+        }
         println("M4A_CODECS: ${byCodec.keys}")
+        return byCodec
+    }
+
+    @Test fun indexedM4aCodecsPlayAndSeekOnDevice() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val byCodec = indexedM4aSamples()
         var scenario: ActivityScenario<MainActivity>? = null
         try {
             scenario = ActivityScenario.launch(MainActivity::class.java)
@@ -300,7 +313,10 @@ class PlayerDeviceTest {
                 scenario.onActivity { model.play(listOf(song)) }
                 try {
                     compose.waitUntil(10_000) { model.playing.value.song?.uri == song.uri &&
-                        model.playing.value.playing && model.playing.value.position in 300..5000 }
+                        model.playing.value.playing && model.playing.value.position in 300..5000 &&
+                        model.audio.value.outputSampleRate > 0 &&
+                        model.audio.value.sourceCodec != "M4A" &&
+                        (mime.startsWith("Other M4A:") || model.audio.value.sourceCodec == mime.substringBefore(':')) }
                     scenario.onActivity { model.seek(song.duration / 2) }
                     compose.waitUntil(10_000) { model.playing.value.playing &&
                         model.playing.value.position >= song.duration / 2 - 1000 }
@@ -311,6 +327,132 @@ class PlayerDeviceTest {
             }
             assertTrue(failures.joinToString("\n"), failures.isEmpty())
         } finally {
+            try { scenario?.close() } finally {
+                context.stopService(android.content.Intent(context, PlaybackService::class.java))
+            }
+        }
+    }
+
+    @Test fun softwareDecodersProduceNonSilentPcmAndSeekForIndexedM4a() {
+        assertNonSilentPcmAndSeeking(indexedM4aSamples())
+    }
+
+    @Test fun commonAudioFormatsProduceNonSilentPcmAndSeek() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val names = listOf("tone-aac.m4a", "tone-alac.m4a", "tone.mp3", "tone.flac", "tone.ogg", "tone.opus",
+            "tone.wav", "tone-alaw.wav", "tone-mulaw.wav", "tone.ac3", "tone.eac3", "tone-dts.mka", "tone-truehd.mka")
+        val files = names.map { File(instrumentation.targetContext.cacheDir, it) }
+        try {
+            files.forEach { file ->
+                instrumentation.context.assets.open("audio/${file.name}").use { input ->
+                    file.outputStream().use { input.copyTo(it) }
+                }
+            }
+            assertNonSilentPcmAndSeeking(files.associate { file ->
+                file.name to Song(Uri.fromFile(file).toString(), file.name, fileName = file.name, duration = 4000)
+            })
+        } finally {
+            files.forEach { check(!it.exists() || it.delete()) }
+        }
+    }
+
+    private fun assertNonSilentPcmAndSeeking(samples: Map<String, Song>) {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val bytes = java.util.concurrent.atomic.AtomicLong()
+        val nonSilent = java.util.concurrent.atomic.AtomicBoolean()
+        val minimumTimestamp = java.util.concurrent.atomic.AtomicLong()
+        val requiredBytes = java.util.concurrent.atomic.AtomicLong(44_100)
+        val outputRate = java.util.concurrent.atomic.AtomicInteger()
+        val failed = java.util.concurrent.atomic.AtomicReference<androidx.media3.common.PlaybackException?>()
+        var scenario: ActivityScenario<MainActivity>? = null
+        var player: androidx.media3.exoplayer.ExoPlayer? = null
+        try {
+            scenario = ActivityScenario.launch(MainActivity::class.java)
+            scenario.onActivity {
+                val factory = object : PlaybackRenderersFactory(context, { EqualizerSettings().parameters() }) {
+                    override fun buildAudioSink(context: Context, enableFloatOutput: Boolean,
+                        enableAudioTrackPlaybackParams: Boolean): androidx.media3.exoplayer.audio.AudioSink =
+                        object : androidx.media3.exoplayer.audio.ForwardingAudioSink(
+                            super.buildAudioSink(context, enableFloatOutput, enableAudioTrackPlaybackParams)) {
+                            private var encoding = androidx.media3.common.C.ENCODING_INVALID
+                            override fun configure(inputFormat: androidx.media3.common.Format, specifiedBufferSize: Int,
+                                outputChannels: IntArray?) {
+                                encoding = inputFormat.pcmEncoding
+                                assertTrue(encoding == androidx.media3.common.C.ENCODING_PCM_FLOAT ||
+                                    encoding == androidx.media3.common.C.ENCODING_PCM_16BIT)
+                                requiredBytes.set(inputFormat.sampleRate.toLong() * inputFormat.channelCount *
+                                    GraphicEqualizer.bytesPerSample(encoding) / 2)
+                                super.configure(inputFormat, specifiedBufferSize, outputChannels)
+                            }
+                            override fun handleBuffer(buffer: ByteBuffer, presentationTimeUs: Long,
+                                encodedAccessUnitCount: Int): Boolean {
+                                val input = buffer.duplicate().order(ByteOrder.LITTLE_ENDIAN)
+                                val size = input.remaining()
+                                var audible = false
+                                while (input.hasRemaining() && !audible) {
+                                    val value = if (encoding == androidx.media3.common.C.ENCODING_PCM_FLOAT)
+                                        input.float else input.short / 32768f
+                                    audible = kotlin.math.abs(value) > 0.000001f
+                                }
+                                val consumed = super.handleBuffer(buffer, presentationTimeUs, encodedAccessUnitCount)
+                                if (consumed && presentationTimeUs >= minimumTimestamp.get()) {
+                                    bytes.addAndGet(size.toLong())
+                                    if (audible) nonSilent.set(true)
+                                }
+                                return consumed
+                            }
+                        }
+                }
+                factory.setMediaCodecSelector { _, _, _ -> emptyList() }
+                player = androidx.media3.exoplayer.ExoPlayer.Builder(context, factory).build().apply {
+                    addListener(object : androidx.media3.common.Player.Listener {
+                        override fun onPlayerError(error: androidx.media3.common.PlaybackException) { failed.set(error) }
+                    })
+                    addAnalyticsListener(object : androidx.media3.exoplayer.analytics.AnalyticsListener {
+                        override fun onAudioTrackInitialized(
+                            eventTime: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime,
+                            audioTrackConfig: androidx.media3.exoplayer.audio.AudioSink.AudioTrackConfig) {
+                            assertEquals(androidx.media3.common.C.ENCODING_PCM_FLOAT, audioTrackConfig.encoding)
+                            outputRate.set(audioTrackConfig.sampleRate)
+                        }
+                    })
+                }
+            }
+            for ((codec, song) in samples) {
+                scenario.onActivity {
+                    requireNotNull(player).stop()
+                    minimumTimestamp.set(0); bytes.set(0); nonSilent.set(false); failed.set(null)
+                    requireNotNull(player).setMediaItem(song.mediaItem())
+                    requireNotNull(player).prepare()
+                    requireNotNull(player).play()
+                }
+                fun awaitPcm() {
+                    try {
+                        compose.waitUntil(15_000) {
+                            failed.get() != null ||
+                                (bytes.get() >= requiredBytes.get() && nonSilent.get() && outputRate.get() > 0)
+                        }
+                    } catch (error: ComposeTimeoutException) {
+                        throw AssertionError("$codec: no decoded PCM at ${minimumTimestamp.get()} us; " +
+                            "bytes=${bytes.get()}/${requiredBytes.get()}, nonSilent=${nonSilent.get()}", error)
+                    }
+                    assertNull("$codec: ${failed.get()}", failed.get())
+                    assertTrue("$codec must write non-silent decoded PCM to the audio sink", nonSilent.get())
+                    assertTrue("$codec must initialize real audio output", outputRate.get() > 0)
+                }
+                awaitPcm()
+                val midpoint = song.duration / 2
+                assertTrue("Seek fixture must have a known duration", midpoint > 1000)
+                scenario.onActivity {
+                    assertTrue(requireNotNull(player).currentTracks.isTypeSelected(androidx.media3.common.C.TRACK_TYPE_AUDIO))
+                    minimumTimestamp.set(midpoint * 1000); bytes.set(0); nonSilent.set(false)
+                    requireNotNull(player).seekTo(midpoint)
+                }
+                awaitPcm()
+                println("AUDIO_PCM_AND_SEEK_OK: $codec; ${song.title}; ${outputRate.get()} Hz")
+            }
+        } finally {
+            scenario?.onActivity { player?.release() }
             try { scenario?.close() } finally {
                 context.stopService(android.content.Intent(context, PlaybackService::class.java))
             }
@@ -385,6 +527,35 @@ class PlayerDeviceTest {
         }
     }
 
+    @Test fun sourceWithoutAudioShowsErrorInsteadOfAdvancingTimer() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val context = instrumentation.targetContext
+        val file = File(context.cacheDir, "no-audio.mp4")
+        var scenario: ActivityScenario<MainActivity>? = null
+        try {
+            instrumentation.context.assets.open("audio/no-audio.mp4").use { input ->
+                file.outputStream().use { input.copyTo(it) }
+            }
+            scenario = ActivityScenario.launch(MainActivity::class.java)
+            lateinit var model: MusicViewModel
+            scenario.onActivity { model = ViewModelProvider(it)[MusicViewModel::class.java] }
+            compose.waitUntil(10_000) { model.playing.value.connected }
+            scenario.onActivity { model.play(listOf(Song(Uri.fromFile(file).toString(), "No audio", fileName = file.name))) }
+            compose.waitUntil(15_000) {
+                model.audio.value.playbackError.contains("ERROR_CODE_DECODING_FORMAT_UNSUPPORTED")
+            }
+            assertFalse(model.playing.value.playing)
+            compose.onNodeWithTag("mini-player").performClick()
+            compose.onNodeWithTag("playback-error").assertIsDisplayed()
+            compose.onNodeWithText("Retry").assertIsDisplayed()
+        } finally {
+            try { scenario?.close() } finally {
+                context.stopService(android.content.Intent(context, PlaybackService::class.java))
+                check(!file.exists() || file.delete())
+            }
+        }
+    }
+
     @Test fun invalidM4aShowsPersistentPlaybackErrorAndRetry() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val file = File(context.filesDir, "resonance-qa-invalid.m4a")
@@ -420,29 +591,17 @@ class PlayerDeviceTest {
 
     @Test fun m4aFallsBackWhenTheFirstAacDecoderCannotInitialize() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
-        var uri: Uri? = null
-        context.contentResolver.query(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, arrayOf("_id"),
-            "_display_name LIKE ?", arrayOf("%.m4a"), null)?.use { cursor ->
-            while (uri == null && cursor.moveToNext()) {
-                val candidate = android.content.ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, cursor.getLong(0))
-                val extractor = android.media.MediaExtractor()
-                try {
-                    extractor.setDataSource(context, candidate, null)
-                    if ((0 until extractor.trackCount).any {
-                            extractor.getTrackFormat(it).getString(android.media.MediaFormat.KEY_MIME) == "audio/mp4a-latm"
-                        }) uri = candidate
-                } catch (error: java.io.IOException) {
-                    android.util.Log.i("MurrmurrQa", "Platform extractor cannot read this candidate M4A; checking the next one", error)
-                } finally { extractor.release() }
-            }
-        } ?: error("Cannot query M4A fixtures")
-        org.junit.Assume.assumeTrue("Requires an indexed AAC M4A", uri != null)
+        val file = File(context.cacheDir, "qa-decoder-fallback.m4a")
+        val uri = Uri.fromFile(file)
         var scenario: ActivityScenario<MainActivity>? = null
         var player: androidx.media3.exoplayer.ExoPlayer? = null
         val started = java.util.concurrent.atomic.AtomicBoolean()
         val queried = java.util.concurrent.atomic.AtomicBoolean()
         val failed = java.util.concurrent.atomic.AtomicReference<androidx.media3.common.PlaybackException?>()
         try {
+            InstrumentationRegistry.getInstrumentation().context.assets.open("audio/tone-aac.m4a").use { input ->
+                file.outputStream().use { input.copyTo(it) }
+            }
             scenario = ActivityScenario.launch(MainActivity::class.java)
             scenario.onActivity {
                 val factory = PlaybackRenderersFactory(context) { EqualizerSettings().parameters() }
@@ -474,6 +633,7 @@ class PlayerDeviceTest {
             scenario?.onActivity { player?.release() }
             try { scenario?.close() } finally {
                 context.stopService(android.content.Intent(context, PlaybackService::class.java))
+                check(!file.exists() || file.delete())
             }
         }
     }

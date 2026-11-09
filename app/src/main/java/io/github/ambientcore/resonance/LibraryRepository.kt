@@ -45,7 +45,8 @@ data class ScanResult(
 
 class LibraryRepository(private val context: Context, fileName: String = "library.json") {
     private val file = AtomicFile(File(context.filesDir, fileName))
-    private val audioExtensions = setOf("mp3", "flac", "m4a", "aac", "ogg", "opus", "wav", "aiff", "aif", "amr")
+    private val audioExtensions = setOf("mp3", "mp2", "flac", "m4a", "m4b", "mp4", "aac", "ogg", "oga", "opus",
+        "wav", "aiff", "aif", "amr", "mka", "webm", "ac3", "eac3", "ec3")
 
     fun load(): LibraryData {
         if (!file.baseFile.exists()) return LibraryData()

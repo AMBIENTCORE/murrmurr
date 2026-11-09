@@ -19,6 +19,7 @@ import androidx.media3.common.Format
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Metadata
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.Tracks
@@ -98,6 +99,9 @@ class PlaybackService : MediaSessionService() {
             setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build(), true)
             setHandleAudioBecomingNoisy(true)
             setWakeMode(C.WAKE_MODE_LOCAL)
+            trackSelectionParameters = trackSelectionParameters.buildUpon()
+                .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, true)
+                .setTrackTypeDisabled(C.TRACK_TYPE_IMAGE, true).build()
             repeatMode = prefs.getInt("repeat", Player.REPEAT_MODE_OFF)
             shuffleModeEnabled = prefs.getBoolean("shuffle", false)
         }
@@ -112,6 +116,17 @@ class PlaybackService : MediaSessionService() {
         })
         player.addListener(object : Player.Listener {
             override fun onEvents(player: Player, events: Player.Events) {
+                if (player.playbackState == Player.STATE_READY && player.currentMediaItem != null &&
+                    !player.currentTracks.isTypeSelected(C.TRACK_TYPE_AUDIO)) {
+                    val formats = player.currentTracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
+                        .flatMap { group -> (0 until group.length).mapNotNull { group.getTrackFormat(it).sampleMimeType } }
+                        .distinct().joinToString()
+                    player.stop()
+                    onPlayerError(PlaybackException(
+                        "No playable audio track" + if (formats.isNotBlank()) " ($formats)" else "",
+                        null, PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED))
+                    return
+                }
                 sampleListening()
                 // Transition callbacks clear the old source before this coherent track snapshot is read.
                 if (events.contains(Player.EVENT_TRACKS_CHANGED) || events.contains(Player.EVENT_MEDIA_ITEM_TRANSITION) ||
@@ -231,7 +246,11 @@ class PlaybackService : MediaSessionService() {
         }
         val lossy = format?.sampleMimeType in setOf("audio/mpeg", "audio/mp4a-latm", "audio/aac", "audio/opus",
                 "audio/vorbis", "audio/3gpp", "audio/amr-wb", "audio/ac3", "audio/eac3", "audio/x-ms-wma")
-        val bits = if (format?.sampleMimeType == "audio/raw") pcmBitDepth(format.pcmEncoding) else 0
+        val bits = when (format?.sampleMimeType) {
+            MimeTypes.AUDIO_RAW -> pcmBitDepth(format.pcmEncoding)
+            MimeTypes.AUDIO_ALAC -> format.initializationData.firstOrNull()?.getOrNull(5)?.toInt()?.and(255) ?: 0
+            else -> 0
+        }
         publishSource(format, bits, lossy)
         sourceRead?.cancel()
         if (uri.scheme == "resonance-server") {
@@ -253,6 +272,8 @@ class PlaybackService : MediaSessionService() {
                         publishSource(format, bits, lossy, retrievedYear = tags.year, retrievedCatalog = tags.catalogNumber)
                     }
                 }
+                // ALAC's magic cookie and MP4 tags avoid unreliable vendor metadata extractors.
+                if (format?.sampleMimeType == MimeTypes.AUDIO_ALAC) return@launch
                 val metadata = MediaMetadataRetriever()
                 val (sourceBits, bitrate, year) = try {
                     metadata.setDataSource(this@PlaybackService, uri)
@@ -335,9 +356,12 @@ class PlaybackService : MediaSessionService() {
     }
 }
 
-internal class PlaybackRenderersFactory(context: Context, private val parameters: () -> EqualizerParameters) :
+internal open class PlaybackRenderersFactory(context: Context, private val parameters: () -> EqualizerParameters) :
     DefaultRenderersFactory(context) {
-    init { setEnableDecoderFallback(true) }
+    init {
+        setEnableDecoderFallback(true)
+        setExtensionRendererMode(EXTENSION_RENDERER_MODE_ON)
+    }
     override fun buildAudioSink(context: Context, enableFloatOutput: Boolean, enableAudioTrackPlaybackParams: Boolean): AudioSink =
         EqualizerAudioSink(DefaultAudioSink.Builder(context).setEnableFloatOutput(true).build(), parameters)
 }

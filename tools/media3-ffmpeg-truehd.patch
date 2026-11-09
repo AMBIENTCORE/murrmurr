@@ -1,0 +1,107 @@
+diff --git a/libraries/decoder_ffmpeg/src/main/jni/ffmpeg_jni.cc b/libraries/decoder_ffmpeg/src/main/jni/ffmpeg_jni.cc
+index fe477db..9819935 100644
+--- a/libraries/decoder_ffmpeg/src/main/jni/ffmpeg_jni.cc
++++ b/libraries/decoder_ffmpeg/src/main/jni/ffmpeg_jni.cc
+@@ -73,6 +73,13 @@ static const int AUDIO_DECODER_ERROR_OTHER = -2;
+ 
+ static jmethodID growOutputBufferMethod;
+ 
++static void logFfmpeg(void *context, int level, const char *format, va_list args) {
++  if (level <= AV_LOG_WARNING) {
++    __android_log_vprint(level <= AV_LOG_ERROR ? ANDROID_LOG_ERROR : ANDROID_LOG_WARN,
++                        LOG_TAG, format, args);
++  }
++}
++
+ /**
+  * Returns the AVCodec with the specified name, or NULL if it is not available.
+  */
+@@ -120,6 +127,7 @@ void logError(const char *functionName, int errorNumber);
+ void releaseContext(AVCodecContext *context);
+ 
+ jint JNI_OnLoad(JavaVM *vm, void *reserved) {
++  av_log_set_callback(logFfmpeg);
+   JNIEnv *env;
+   if (vm->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_6) != JNI_OK) {
+     LOGE("JNI_OnLoad: GetEnv failed");
+@@ -237,6 +245,8 @@ AUDIO_DECODER_FUNC(jlong, ffmpegReset, jlong jContext, jbyteArray extraData) {
+ 
+   AVCodecID codecId = context->codec_id;
+   if (codecId == AV_CODEC_ID_TRUEHD) {
++    const int sampleRate = context->sample_rate;
++    const int channelCount = context->ch_layout.nb_channels;
+     jboolean outputFloat =
+         (jboolean)(context->request_sample_fmt == OUTPUT_FORMAT_PCM_FLOAT);
+     // Release and recreate the context if the codec is TrueHD.
+@@ -248,8 +258,7 @@ AUDIO_DECODER_FUNC(jlong, ffmpegReset, jlong jContext, jbyteArray extraData) {
+       return 0L;
+     }
+     return (jlong)createContext(env, codec, extraData, outputFloat,
+-                                /* rawSampleRate= */ -1,
+-                                /* rawChannelCount= */ -1);
++                                sampleRate, channelCount);
+   }
+ 
+   avcodec_flush_buffers(context);
+@@ -295,7 +304,8 @@ AVCodecContext *createContext(JNIEnv *env, const AVCodec *codec,
+     env->GetByteArrayRegion(extraData, 0, size, (jbyte *)context->extradata);
+   }
+   if (context->codec_id == AV_CODEC_ID_PCM_MULAW ||
+-      context->codec_id == AV_CODEC_ID_PCM_ALAW) {
++      context->codec_id == AV_CODEC_ID_PCM_ALAW ||
++      context->codec_id == AV_CODEC_ID_TRUEHD) {
+     context->sample_rate = rawSampleRate;
+     av_channel_layout_default(&context->ch_layout, rawChannelCount);
+   }
+@@ -313,6 +323,26 @@ int decodePacket(AVCodecContext *context, AVPacket *packet,
+                  uint8_t *outputBuffer, int outputSize,
+                  GrowOutputBufferCallback growBuffer) {
+   int result = 0;
++  uint8_t *inputData = packet->data;
++  const int inputSize = packet->size;
++  int inputOffset = 0;
++  int outSize = 0;
++  do {
++    if (context->codec_id == AV_CODEC_ID_TRUEHD) {
++      // Media3 combines TrueHD access units; FFmpeg requires one at a time.
++      if (inputSize - inputOffset < 4) {
++        LOGE("Truncated TrueHD access unit.");
++        return AUDIO_DECODER_ERROR_INVALID_DATA;
++      }
++      const int frameSize =
++          (((inputData[inputOffset] & 0x0f) << 8) | inputData[inputOffset + 1]) * 2;
++      if (frameSize < 4 || frameSize > inputSize - inputOffset) {
++        LOGE("Invalid TrueHD access unit size.");
++        return AUDIO_DECODER_ERROR_INVALID_DATA;
++      }
++      packet->data = inputData + inputOffset;
++      packet->size = frameSize;
++    }
+   // Queue input data.
+   result = avcodec_send_packet(context, packet);
+   if (result) {
+@@ -321,7 +351,6 @@ int decodePacket(AVCodecContext *context, AVPacket *packet,
+   }
+ 
+   // Dequeue output data until it runs out.
+-  int outSize = 0;
+   while (true) {
+     AVFrame *frame = av_frame_alloc();
+     if (!frame) {
+@@ -387,6 +416,7 @@ int decodePacket(AVCodecContext *context, AVPacket *packet,
+         av_frame_free(&frame);
+         return AUDIO_DECODER_ERROR_OTHER;
+       }
++      outputBuffer += outSize;
+     }
+     result = swr_convert(resampleContext, &outputBuffer, bufferOutSize,
+                          (const uint8_t **)frame->data, frame->nb_samples);
+@@ -404,6 +434,8 @@ int decodePacket(AVCodecContext *context, AVPacket *packet,
+     outputBuffer += bufferOutSize;
+     outSize += bufferOutSize;
+   }
++    inputOffset += packet->size;
++  } while (inputOffset < inputSize);
+   return outSize;
+ }
+ 
