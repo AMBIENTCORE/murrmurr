@@ -141,6 +141,27 @@ class PlayerDeviceTest {
         }
     }
 
+    @Test fun manualGithubCheckShowsResultInsideSettings() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        var scenario: ActivityScenario<MainActivity>? = null
+        try {
+            scenario = ActivityScenario.launch(MainActivity::class.java)
+            lateinit var model: MusicViewModel
+            scenario.onActivity { model = ViewModelProvider(it)[MusicViewModel::class.java] }
+            compose.onNodeWithContentDescription("Settings").performClick()
+            compose.onNodeWithTag("check-for-updates").performScrollTo().performClick()
+            compose.waitUntil(15_000) { !model.updates.value.checking }
+            assertNull(model.updates.value.error)
+            model.updates.value.available?.let { compose.onNodeWithText("Later").performClick() }
+            val status = requireNotNull(model.updates.value.status)
+            compose.onNodeWithTag("update-check-status").performScrollTo().assertTextEquals(status).assertIsDisplayed()
+        } finally {
+            try { scenario?.close() } finally {
+                context.stopService(android.content.Intent(context, PlaybackService::class.java))
+            }
+        }
+    }
+
     @Test fun indexedM4aCodecsPlayAndSeekOnDevice() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val byCodec = linkedMapOf<String, Song>()

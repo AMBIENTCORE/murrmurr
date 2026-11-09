@@ -53,7 +53,7 @@ NAS access is through Navidrome, not direct SMB or NFS shares.
 
 1. Download the [latest release APK](https://github.com/AMBIENTCORE/murrmurr/releases/latest)
    to your Android device. Files are named
-   `murmurr_<version>.apk`, for example `murmurr_0.9.12.apk`.
+   `murmurr_<version>.apk`, for example `murmurr_0.9.13.apk`.
 2. Open the APK from your browser's downloads or a file manager.
 3. If Android prompts you, allow that browser or file manager to
    **Install unknown apps**, then return to the APK.

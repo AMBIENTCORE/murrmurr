@@ -201,12 +201,12 @@ class MusicViewModel(application: Application) : AndroidViewModel(application), 
         val now = android.os.SystemClock.elapsedRealtime()
         if (!manual && lastUpdateCheck?.let { now - it < 15 * 60_000L } == true) return
         lastUpdateCheck = now
-        mutableUpdates.update { it.copy(checking = true, error = null) }
+        mutableUpdates.update { it.copy(checking = true, error = null, status = null) }
         viewModelScope.launch {
             try {
                 val update = withContext(Dispatchers.IO) { latestAppUpdate() }
-                mutableUpdates.value = UpdateUi(available = update?.takeIf { manual || it.version != dismissedUpdate })
-                if (manual && update == null) message("You're using the latest version.")
+                mutableUpdates.value = UpdateUi(available = update?.takeIf { manual || it.version != dismissedUpdate },
+                    status = if (update == null) "You're using the latest version." else "Version ${update.version} is available.")
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
                 Log.w("MurrmurrUpdates", "GitHub update check failed", error)

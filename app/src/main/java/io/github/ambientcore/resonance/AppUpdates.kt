@@ -6,7 +6,8 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 data class AppUpdate(val version: String, val apkUrl: String)
-data class UpdateUi(val checking: Boolean = false, val available: AppUpdate? = null, val error: String? = null)
+data class UpdateUi(val checking: Boolean = false, val available: AppUpdate? = null, val error: String? = null,
+    val status: String? = null)
 
 private val stableVersion = Regex("""v?(\d+)\.(\d+)\.(\d+)""")
 

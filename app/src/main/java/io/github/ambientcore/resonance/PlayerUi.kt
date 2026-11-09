@@ -1174,6 +1174,7 @@ private fun Settings(model: MusicViewModel, data: LibraryData, permission: () ->
             Text(if (updates.checking) "Checking for updates..." else "Check for updates")
         }
         updates.error?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 11.sp) }
+        updates.status?.let { Text(it, color = Muted, fontSize = 11.sp, modifier = Modifier.testTag("update-check-status")) }
         Text("${stringResource(R.string.app_name)} ${BuildConfig.VERSION_NAME}", color = Muted, fontSize = 11.sp)
     }
     if (confirmClearHistory) AlertDialog(onDismissRequest = { confirmClearHistory = false },
