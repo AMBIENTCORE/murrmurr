@@ -34,6 +34,7 @@ NAS access is through Navidrome, not direct SMB or NFS shares.
 - Read-only browsing of Navidrome playlists, with server-side favorites and ratings.
 - M3U/M3U8 playlist import/export for local music.
 - Library statistics, device-recorded listening history and an optional ten-band equalizer.
+- An on-demand listening map for exploring artist credits, albums and tracks.
 
 ### Built with
 
@@ -53,7 +54,7 @@ NAS access is through Navidrome, not direct SMB or NFS shares.
 
 1. Download the [latest release APK](https://github.com/AMBIENTCORE/murrmurr/releases/latest)
    to your Android device. Files are named
-   `murmurr_<version>.apk`, for example `murmurr_0.9.17.apk`.
+   `murmurr_<version>.apk`, for example `murmurr_0.9.18.apk`.
 2. Open the APK from your browser's downloads or a file manager.
 3. If Android prompts you, allow that browser or file manager to
    **Install unknown apps**, then return to the APK.
@@ -161,6 +162,42 @@ The sort icon offers **Alphabetical**, **Year (newest first)**, and
 **Year (oldest first)**. Unknown years sort last; collection years use the
 earliest known track year. Use **Refresh tags / remove missing** to populate
 years when Android's index omits them. The fast new-track scan remains index-only.
+
+### Listening map
+
+Open **Listening map** on Home, or select it from the Library category menu.
+Tap an artist to explore their albums, then tap an album for its tracks and
+**Play**, **Shuffle**, **Queue**, or **Open album** actions. Browsing the map never
+replaces the playing queue unless you explicitly choose a playback action.
+Opening a compilation album preserves all of its tracks.
+
+The map uses performer and album-artist credits, not genre guesses. Missing or
+inconsistent genre tags do not matter. Lines indicate membership in the library
+or an artist's credited albums; they do not claim musical similarity. Artists
+with missing credits remain available as **Unknown artist**. Counts are credited
+tracks, so a track with different performer and album-artist names can appear
+under both artists.
+
+The largest credited collections appear first. Search jumps to any artist or
+album; page buttons keep every entry accessible without drawing a huge graph.
+Pinch to zoom or drag to pan, with **Zoom in**, **Zoom out**, and **Reset map view**
+buttons as alternatives. Local and Server retain separate map selections and
+view positions across browsing and activity recreation. Album details use a
+bottom sheet on phones and a side panel on wide screens.
+
+The native map has no extra dependency, WebView, file scan, audio analysis,
+background service or continuous physics animation. Metadata aggregation runs
+off the UI thread only on demand. A single summary page is cached, with at most
+8 visible nodes on phones or 12 on wide screens; old library snapshots are not
+retained by that cache. Album covers load only when an album preview is opened.
+The map reuses the saved Local/Server catalog; normal source refresh, artwork
+and explicit server playback retain their existing network behavior.
+
+Map regressions cover missing tags, compilation contents, navigation/playback,
+source isolation, cache invalidation and cancellation. The R4 device performance
+check uses 50,000 synthetic tracks / 5,000 artists and requires a background page
+build below 1.5 seconds, a cached read below 50 ms, and gesture-frame p95 below
+50 ms, with no rebuilds during gestures or after closing the map.
 
 ### Audio formats
 

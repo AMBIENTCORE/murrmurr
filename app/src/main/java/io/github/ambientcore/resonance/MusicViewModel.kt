@@ -135,6 +135,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application), 
     private val future = MediaController.Builder(application, SessionToken(application, ComponentName(application, PlaybackService::class.java))).buildAsync()
     private var cachedTimeline: androidx.media3.common.Timeline? = null
     private var cachedQueue: List<Song> = emptyList()
+    internal val listeningMap = ListeningMapCache()
 
     init {
         prefs.registerOnSharedPreferenceChangeListener(this)
@@ -619,6 +620,12 @@ class MusicViewModel(application: Application) : AndroidViewModel(application), 
         if (next) control.addMediaItem((control.currentMediaItemIndex + 1).coerceIn(0, control.mediaItemCount), song.mediaItem())
         else control.addMediaItem(song.mediaItem())
         message(if (next) "Will play next" else "Added to queue")
+    }
+    fun queue(songs: List<Song>) {
+        if (songs.isEmpty()) { message("No tracks to add"); return }
+        val control = controller ?: run { message("Player is not connected"); return }
+        control.addMediaItems(songs.map(Song::mediaItem))
+        message("${songs.size} tracks added to queue")
     }
     fun queueJump(index: Int) { controller?.let { it.seekToDefaultPosition(index); it.prepare(); it.play() } }
     fun queueRemove(index: Int) { controller?.removeMediaItem(index) }
