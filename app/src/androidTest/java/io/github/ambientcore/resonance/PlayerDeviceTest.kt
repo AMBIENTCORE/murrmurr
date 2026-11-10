@@ -76,9 +76,12 @@ class PlayerDeviceTest {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val repository = LibraryRepository(context)
         val original = repository.load()
+        val historyStore = HistoryRepository(context)
+        val originalHistory = historyStore.load()
         val file = File(context.filesDir, "qa-listening-map.wav")
         var scenario: ActivityScenario<MainActivity>? = null
         try {
+            historyStore.save(ListeningHistory())
             writeSilentWave(file)
             val songs = (0 until 16).flatMap { artist ->
                 (0 until 2).flatMap { album -> (1..2).map { track ->
@@ -105,7 +108,7 @@ class PlayerDeviceTest {
             fun nodes() = compose.onAllNodes(SemanticsMatcher("map node") {
                 it.config.getOrNull(androidx.compose.ui.semantics.SemanticsProperties.TestTag)?.startsWith("map-node-") == true
             }).fetchSemanticsNodes()
-            assertEquals(8, nodes().size)
+            assertTrue("Artist picker composes only a bounded visible page", nodes().size in 1..8)
             File(context.cacheDir, "qa-listening-map-phone.png").outputStream().use {
                 assertTrue(compose.onNodeWithTag("player-root").captureToImage().asAndroidBitmap()
                     .compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it))
@@ -117,10 +120,10 @@ class PlayerDeviceTest {
             compose.onNodeWithTag("map-search").performImeAction()
             compose.waitUntil(5000) { nodes().size == 1 }
             compose.onNodeWithTag("map-node-map artist 00").performTouchInput { click(center) }
+            compose.onNodeWithTag("map-empty").assertIsDisplayed()
+            compose.onNodeWithTag("map-mode-albums").performClick()
             compose.waitUntil(5000) { nodes().size == 2 }
             compose.onNodeWithTag("map-heading").assertTextEquals("Map Artist 00")
-            compose.onNodeWithTag("map-zoom-out").performClick()
-            compose.onNodeWithTag("listening-map-graph").assert(hasStateDescription("Zoom 80%; 2 nodes"))
             assertEquals(originalQueue, model.playing.value.queue.map { it.uri })
             assertTrue(model.playing.value.playing)
             val builds = model.listeningMap.builds
@@ -148,7 +151,7 @@ class PlayerDeviceTest {
             compose.onNodeWithTag("track-${songs[0].uri}").assertIsDisplayed()
             compose.onNodeWithContentDescription("Back to library").performClick()
             compose.onNodeWithContentDescription("Close album preview").performClick()
-            compose.onNodeWithTag("listening-map-graph").assert(hasStateDescription("Zoom 80%; 2 nodes"))
+            compose.onNodeWithTag("map-mode-albums").assertIsSelected()
             assertEquals(builds, model.listeningMap.builds)
             compose.onNodeWithTag("map-all-artists").performClick()
             compose.waitUntil(5000) { compose.onAllNodesWithTag("map-count").fetchSemanticsNodes()
@@ -167,6 +170,102 @@ class PlayerDeviceTest {
             try { scenario?.close() } finally {
                 context.stopService(android.content.Intent(context, PlaybackService::class.java))
                 repository.save(original)
+                historyStore.save(originalHistory)
+                check(!file.exists() || file.delete())
+            }
+        }
+    }
+
+    @Test fun discoveryMapExplainsRealLinksPlaysEvidenceAndDoesNotInventNeighbors() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val repository = LibraryRepository(context)
+        val original = repository.load()
+        val historyStore = HistoryRepository(context)
+        val originalHistory = historyStore.load()
+        val file = File(context.filesDir, "qa-discovery-map.wav")
+        var scenario: ActivityScenario<MainActivity>? = null
+        try {
+            writeSilentWave(file)
+            fun song(id: String, artist: String, album: String, albumArtist: String = artist, genre: String = "") =
+                Song(Uri.fromFile(file).buildUpon().fragment(id).build().toString(), "Track $id", artist, album,
+                    albumArtist = albumArtist, genre = genre, duration = 30_000, fileName = file.name)
+            val anchor = song("anchor", "Anchor", "Shared record", "Curator", "Ambient")
+            val credited = song("credit", "Credit Neighbor", "Shared record", "Curator")
+            val listening = song("listening", "Listening Neighbor", "Listening record")
+            val tagged = song("tagged", "Tag Neighbor", "Tagged record", genre = "ambient")
+            val isolated = song("isolated", "Isolated", "Alone")
+            val songs = listOf(anchor, credited, listening, tagged, isolated)
+            repository.save(original.copy(songs = songs))
+            val old = System.currentTimeMillis() - 100L * 24 * 60 * 60_000
+            fun event(song: Song, offset: Long) = ListenEvent(song.uri, song.title, song.artist, song.album, old + offset)
+            historyStore.save(ListeningHistory(counts = mapOf(anchor.uri to 2, listening.uri to 1),
+                lastPlayed = mapOf(anchor.uri to old + 3000, listening.uri to old + 2000),
+                recent = listOf(event(anchor, 1000), event(listening, 2000), event(anchor, 3000))))
+            scenario = ActivityScenario.launch(MainActivity::class.java)
+            lateinit var model: MusicViewModel
+            scenario.onActivity { model = ViewModelProvider(it)[MusicViewModel::class.java] }
+            compose.waitUntil(10_000) { !model.library.value.loading && !model.history.value.loading && model.playing.value.connected }
+            compose.onNodeWithTag("open-listening-map").performClick()
+            compose.waitUntil(5000) { compose.onAllNodesWithTag("map-node-anchor").fetchSemanticsNodes().isNotEmpty() }
+            compose.onNodeWithTag("map-node-anchor").performClick()
+            compose.waitUntil(5000) { compose.onAllNodesWithTag("listening-map-graph").fetchSemanticsNodes().isNotEmpty() }
+            compose.onNodeWithText("Your library").assertDoesNotExist()
+            compose.onNodeWithTag("map-node-credit neighbor").assertIsDisplayed()
+            compose.onNodeWithTag("map-node-tag neighbor").assertDoesNotExist()
+            compose.onNodeWithTag("map-node-isolated").assertDoesNotExist()
+            compose.onNodeWithTag("map-genre-links").assertIsNotSelected()
+            compose.onNodeWithTag("map-search").performTextReplacement("Listening")
+            compose.onNodeWithTag("map-search").performImeAction()
+            compose.waitUntil(5000) { compose.onAllNodesWithTag("map-link-listening neighbor").fetchSemanticsNodes().isNotEmpty() }
+            compose.onNodeWithTag("map-node-listening neighbor").assertTextContains("Unheard 90+ days")
+            File(context.cacheDir, "qa-discovery-map.png").outputStream().use {
+                assertTrue(compose.onNodeWithTag("player-root").captureToImage().asAndroidBitmap()
+                    .compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it))
+            }
+            compose.onNodeWithTag("map-zoom-out").performClick()
+            compose.onNodeWithTag("map-link-listening neighbor").performClick()
+            compose.waitUntil(5000) { compose.onAllNodesWithTag("map-evidence").fetchSemanticsNodes().isNotEmpty() }
+            compose.onNodeWithTag("map-evidence").assertTextContains("Adjacent plays", substring = true)
+            compose.onNodeWithTag("map-track-${anchor.uri}").assertExists()
+            compose.onNodeWithTag("map-track-${listening.uri}").assertExists()
+            compose.onNodeWithTag("map-track-${credited.uri}").assertDoesNotExist()
+            compose.onNodeWithTag("map-play").performClick()
+            compose.waitUntil(5000) { model.playing.value.playing && model.playing.value.queue.size == 2 }
+            assertEquals(setOf(anchor.uri, listening.uri), model.playing.value.queue.map { it.uri }.toSet())
+            compose.onNodeWithTag("map-queue").performClick()
+            compose.waitUntil(5000) { model.playing.value.queue.size == 4 }
+            compose.onNodeWithTag("map-shuffle").performClick()
+            compose.waitUntil(5000) { model.playing.value.shuffle && model.playing.value.queue.size == 2 }
+            compose.onNodeWithTag("map-album-details").performScrollToNode(hasTestTag("map-open-album"))
+            compose.onNodeWithTag("map-open-album").performClick()
+            compose.onNodeWithTag("collection-title").assertTextEquals("Anchor / Listening Neighbor")
+            compose.onNodeWithContentDescription("Back to library").performClick()
+            compose.onNodeWithContentDescription("Close connection preview").performClick()
+            compose.onNodeWithTag("listening-map-graph").assert(hasStateDescription("Zoom 80%; 2 nodes"))
+            compose.onNodeWithTag("map-genre-links").performClick()
+            compose.onNodeWithTag("map-search").performTextReplacement("Tag")
+            compose.onNodeWithTag("map-search").performImeAction()
+            compose.waitUntil(5000) { compose.onAllNodesWithTag("map-node-tag neighbor").fetchSemanticsNodes().isNotEmpty() }
+            compose.onNodeWithTag("map-node-tag neighbor").performClick()
+            compose.waitUntil(5000) { compose.onAllNodesWithTag("map-evidence").fetchSemanticsNodes().isNotEmpty() }
+            compose.onNodeWithTag("map-evidence").assertTextContains("Shared genre tags: ambient", substring = true)
+            compose.onNodeWithTag("map-album-details").performScrollToNode(hasTestTag("map-focus-neighbor"))
+            compose.onNodeWithTag("map-focus-neighbor").performClick()
+            compose.onNodeWithTag("map-heading").assertTextEquals("Tag Neighbor")
+            compose.onNodeWithTag("map-all-artists").performClick()
+            compose.onNodeWithTag("map-search").performTextInput("Isolated")
+            compose.onNodeWithTag("map-search").performImeAction()
+            compose.waitUntil(5000) { compose.onAllNodesWithTag("map-node-isolated").fetchSemanticsNodes().isNotEmpty() }
+            compose.onNodeWithTag("map-node-isolated").performClick()
+            compose.waitUntil(5000) { compose.onAllNodesWithTag("map-empty").fetchSemanticsNodes().isNotEmpty() }
+            compose.onNodeWithTag("listening-map-graph").assertDoesNotExist()
+            compose.onNodeWithTag("map-mode-albums").performClick()
+            compose.waitUntil(5000) { compose.onAllNodesWithTag("map-node-${isolated.albumKey}").fetchSemanticsNodes().isNotEmpty() }
+        } finally {
+            try { scenario?.close() } finally {
+                context.stopService(android.content.Intent(context, PlaybackService::class.java))
+                repository.save(original)
+                historyStore.save(originalHistory)
                 check(!file.exists() || file.delete())
             }
         }
@@ -175,17 +274,18 @@ class PlayerDeviceTest {
     @Test fun listeningMapBoundsLargeLibraryWorkAndGestureFrameTimes() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val songs = (0 until 50_000).map { index ->
-            Song("content://qa/map/$index", "Track $index", "Artist ${index % 5000}", "Album ${index % 10000}")
+            Song("content://qa/map/$index", "Track $index", "Artist ${index % 5000}", "Album $index", albumArtist = "Anchor")
         }
         val cache = ListeningMapCache()
         val start = android.os.SystemClock.elapsedRealtime()
-        val page = kotlinx.coroutines.runBlocking { cache.page(songs, MapRequest()) }
+        val request = MapRequest(artist = "anchor", pageSize = 7, mode = MapMode.CONNECTIONS)
+        val page = kotlinx.coroutines.runBlocking { cache.page(songs, request) }
         val buildMs = android.os.SystemClock.elapsedRealtime() - start
         assertEquals(5000, page.matches)
-        assertEquals(8, page.nodes.size)
+        assertEquals(7, page.nodes.size)
         assertTrue("50k-track map build took $buildMs ms on ${android.os.Build.MODEL}", buildMs < 1500)
         val cachedStart = android.os.SystemClock.elapsedRealtime()
-        assertSame(page, kotlinx.coroutines.runBlocking { cache.page(songs, MapRequest()) })
+        assertSame(page, kotlinx.coroutines.runBlocking { cache.page(songs, request) })
         val cachedMs = android.os.SystemClock.elapsedRealtime() - cachedStart
         assertTrue("Cached map access took $cachedMs ms", cachedMs < 50)
         val frames = java.util.Collections.synchronizedList(mutableListOf<Long>())
@@ -210,13 +310,13 @@ class PlayerDeviceTest {
                 activity.setContent {
                     MurrmurrTheme(AppTheme.CINDER) {
                         Surface(Modifier.systemBarsPadding(), color = Ink, contentColor = Paper) {
-                            ListeningMapScreen(songs, cache, { _, _, _ -> }, {}, {})
+                            ListeningMapScreen(songs, cache, { _, _, _ -> }, {}, {}, initialArtist = "anchor")
                         }
                     }
                 }
             }
             compose.waitUntil(10_000) { compose.onAllNodesWithTag("map-count").fetchSemanticsNodes().isNotEmpty() }
-            compose.onNodeWithTag("map-count").assertTextEquals("5000 artists")
+            compose.onNodeWithTag("map-count").assertTextEquals("5000 connections")
             compose.onNodeWithTag("listening-map-graph").performTouchInput {
                 val near = androidx.compose.ui.geometry.Offset(40f, 0f)
                 val far = androidx.compose.ui.geometry.Offset(80f, 0f)
@@ -239,12 +339,22 @@ class PlayerDeviceTest {
                 val x = bounds.center.x.toInt()
                 val y = bounds.center.y.toInt()
                 val delta = if (index % 2 == 0) 70 else -70
-                val command = "input swipe $x $y ${x + delta} ${y + delta / 2} 350"
-                val output = InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand(command)
-                val response = android.os.ParcelFileDescriptor.AutoCloseInputStream(output).use {
-                    it.readBytes().toString(Charsets.UTF_8).trim()
+                val automation = InstrumentationRegistry.getInstrumentation().uiAutomation
+                val downTime = android.os.SystemClock.uptimeMillis()
+                fun send(action: Int, progress: Float) {
+                    val event = android.view.MotionEvent.obtain(downTime, android.os.SystemClock.uptimeMillis(),
+                        action, x + delta * progress, y + delta * progress / 2, 0)
+                    try {
+                        event.source = android.view.InputDevice.SOURCE_TOUCHSCREEN
+                        assertTrue("Real-time touch injection failed", automation.injectInputEvent(event, true))
+                    } finally { event.recycle() }
                 }
-                assertTrue("Native input failed: $response", response.isEmpty())
+                send(android.view.MotionEvent.ACTION_DOWN, 0f)
+                repeat(22) { step ->
+                    android.os.SystemClock.sleep(16)
+                    send(android.view.MotionEvent.ACTION_MOVE, (step + 1) / 22f)
+                }
+                send(android.view.MotionEvent.ACTION_UP, 1f)
                 if (index == 0) {
                     compose.waitForIdle()
                     val afterPan = compose.onNodeWithTag(firstNodeTag).fetchSemanticsNode().boundsInRoot.left
@@ -302,10 +412,11 @@ class PlayerDeviceTest {
             }
             compose.waitUntil(10_000) { compose.onAllNodesWithTag("map-node-artist").fetchSemanticsNodes().isNotEmpty() }
             compose.onNodeWithTag("map-node-artist").performClick()
+            compose.onNodeWithTag("map-mode-albums").performClick()
             compose.waitUntil(5000) { compose.onAllNodesWithTag("map-node-${first.albumKey}").fetchSemanticsNodes().isNotEmpty() }
             compose.onNodeWithTag("map-node-${first.albumKey}").performClick()
             compose.onNodeWithTag("map-album-details").assertIsDisplayed()
-            val graph = compose.onNodeWithTag("listening-map-graph").fetchSemanticsNode().boundsInRoot
+            val graph = compose.onNodeWithTag("map-picker").fetchSemanticsNode().boundsInRoot
             val panel = compose.onNodeWithTag("map-album-details").fetchSemanticsNode().boundsInRoot
             assertTrue("Wide album preview must sit beside, not cover, the map", panel.left >= graph.right)
             File(context.cacheDir, "qa-listening-map-wide.png").outputStream().use {
@@ -360,7 +471,8 @@ class PlayerDeviceTest {
             compose.waitUntil(5000) { compose.onAllNodesWithTag("map-node-local map artist").fetchSemanticsNodes().isNotEmpty() }
             compose.onNodeWithTag("map-node-local map artist").performClick()
             compose.waitUntil(5000) { compose.onAllNodesWithTag("map-count").fetchSemanticsNodes().isNotEmpty() }
-            compose.onNodeWithTag("map-zoom-in").performClick()
+            compose.onNodeWithTag("map-genre-links").performClick()
+            compose.onNodeWithTag("map-mode-albums").performClick()
             compose.onNodeWithTag("source-toggle").performClick()
             compose.waitUntil(10_000) { model.source.value == LibrarySource.SERVER && !model.server.value.refreshing }
             compose.onNodeWithTag("open-listening-map").performClick()
@@ -368,17 +480,19 @@ class PlayerDeviceTest {
             compose.onNodeWithTag("map-node-local map artist").assertDoesNotExist()
             val requests = remote.requests.size
             compose.onNodeWithTag("map-node-server artist").performClick()
+            compose.onNodeWithTag("map-genre-links").assertIsNotSelected()
+            compose.onNodeWithTag("map-mode-albums").performClick()
             compose.waitUntil(5000) { compose.onAllNodesWithTag("map-node-${serverData.songs[0].albumKey}").fetchSemanticsNodes().isNotEmpty() }
-            compose.onNodeWithTag("map-zoom-in").performClick()
-            compose.onNodeWithTag("map-reset").performClick()
             assertEquals("Map navigation must use the cached server catalog only", requests, remote.requests.size)
             compose.onNodeWithTag("source-toggle").performClick()
             compose.onNodeWithTag("map-heading").assertTextEquals("Local Map Artist")
-            compose.onNodeWithTag("listening-map-graph").assert(hasStateDescription("Zoom 125%; 1 nodes"))
+            compose.onNodeWithTag("map-mode-albums").assertIsSelected()
             scenario.recreate()
-            compose.waitUntil(5000) { compose.onAllNodesWithTag("listening-map-graph").fetchSemanticsNodes().isNotEmpty() }
+            compose.waitUntil(5000) { compose.onAllNodesWithTag("map-picker").fetchSemanticsNodes().isNotEmpty() }
             compose.onNodeWithTag("map-heading").assertTextEquals("Local Map Artist")
-            compose.onNodeWithTag("listening-map-graph").assert(hasStateDescription("Zoom 125%; 1 nodes"))
+            compose.onNodeWithTag("map-mode-albums").assertIsSelected()
+            compose.onNodeWithTag("map-mode-connections").performClick()
+            compose.onNodeWithTag("map-genre-links").assertIsSelected()
             assertNull(remote.error)
         } finally {
             try { scenario?.close() } finally {

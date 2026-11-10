@@ -267,7 +267,7 @@ fun MurrmurrApp(model: MusicViewModel, requestPermission: () -> Unit) {
                     }
                     mapOpen -> browseState.SaveableStateProvider("$browseKey:map") {
                         ListeningMapScreen(data.songs, model.listeningMap, model::play, model::queue,
-                            { group -> openCollection(Collection(group.name, group.subtitle, group.songs)) })
+                            { group -> openCollection(Collection(group.name, group.subtitle, group.songs)) }, history.data)
                     }
                     tab == 0 -> browseState.SaveableStateProvider("$browseKey:home") {
                         Home(data, model, ::pickFolder, ::openCollection, onAdd, onDetails, { setMapOpen(true) })

@@ -34,7 +34,7 @@ NAS access is through Navidrome, not direct SMB or NFS shares.
 - Read-only browsing of Navidrome playlists, with server-side favorites and ratings.
 - M3U/M3U8 playlist import/export for local music.
 - Library statistics, device-recorded listening history and an optional ten-band equalizer.
-- An on-demand listening map for exploring artist credits, albums and tracks.
+- An on-demand discovery map with explainable artist connections and playable supporting music.
 
 ### Built with
 
@@ -54,7 +54,7 @@ NAS access is through Navidrome, not direct SMB or NFS shares.
 
 1. Download the [latest release APK](https://github.com/AMBIENTCORE/murrmurr/releases/latest)
    to your Android device. Files are named
-   `murmurr_<version>.apk`, for example `murmurr_0.9.18.apk`.
+   `murmurr_<version>.apk`, for example `murmurr_0.9.19.apk`.
 2. Open the APK from your browser's downloads or a file manager.
 3. If Android prompts you, allow that browser or file manager to
    **Install unknown apps**, then return to the APK.
@@ -166,34 +166,56 @@ years when Android's index omits them. The fast new-track scan remains index-onl
 ### Listening map
 
 Open **Listening map** on Home, or select it from the Library category menu.
-Tap an artist to explore their albums, then tap an album for its tracks and
-**Play**, **Shuffle**, **Queue**, or **Open album** actions. Browsing the map never
-replaces the playing queue unless you explicitly choose a playback action.
-Opening a compilation album preserves all of its tracks.
+Choose an artist to center a small **Connections** neighborhood. There is no
+generic Library hub: a line exists only when the current library/history
+supports a reason:
 
-The map uses performer and album-artist credits, not genre guesses. Missing or
-inconsistent genre tags do not matter. Lines indicate membership in the library
-or an artist's credited albums; they do not claim musical similarity. Artists
-with missing credits remain available as **Unknown artist**. Counts are credited
-tracks, so a track with different performer and album-artist names can appear
-under both artists.
+- **Shared albums**: both artists have performer or album-artist credits on the
+  same album. This includes compilation appearances, not just collaborations.
+- **Played together**: at least two adjacent-play pairs in this source's
+  local history, each no more than 30 minutes apart. Missing tracks, repeated
+  plays of the same file, and long gaps do not manufacture links.
+- **Shared tags**: optional shared genre tags. **Genre links** is off by default,
+  so incomplete or unreliable genre tags are never required.
 
-The largest credited collections appear first. Search jumps to any artist or
-album; page buttons keep every entry accessible without drawing a huge graph.
+Connection cards and link markers open an explanation and the actual supporting
+tracks. **Play**, **Shuffle**, **Queue**, or **Open tracks** act on that evidence;
+**Explore artist** recenters the neighborhood on the neighbor. No relationship
+claims musical similarity. If evidence is insufficient, the map says so instead
+of drawing decorative lines.
+
+**Unexplored here** means no qualified play is recorded on this device.
+**Unheard 90+ days** uses the saved last-played timestamp; neither badge claims
+to know listening outside the app. Connections rank shared-album evidence first,
+then repeated adjacent plays, then optional tag overlap, with unexplored/older
+listening history breaking ties. The initial artist picker and the separate
+**Albums** view remain ordered by credited track count.
+
+Tap the center artist or **Albums** to use normal album browsing. Compilation
+album previews keep the complete album, unlike a connection's supporting mix.
+Artists with missing credits remain available as **Unknown artist**, without
+inventing relationships between unidentified performers. Browsing or opening
+a preview never replaces the queue unless you choose a playback action.
+
+Search filters the artist picker, current connections or albums; page buttons
+keep every entry accessible without drawing a huge graph.
 Pinch to zoom or drag to pan, with **Zoom in**, **Zoom out**, and **Reset map view**
 buttons as alternatives. Local and Server retain separate map selections and
-view positions across browsing and activity recreation. Album details use a
+view positions across browsing and activity recreation. Music previews use a
 bottom sheet on phones and a side panel on wide screens.
 
 The native map has no extra dependency, WebView, file scan, audio analysis,
-background service or continuous physics animation. Metadata aggregation runs
+background service or continuous physics animation. Catalog/history aggregation runs
 off the UI thread only on demand. A single summary page is cached, with at most
-8 visible nodes on phones or 12 on wide screens; old library snapshots are not
-retained by that cache. Album covers load only when an album preview is opened.
+8 visible nodes on phones or 12 on wide screens, including the center artist.
+Short phone windows show fewer neighbors to keep links readable. Old catalog
+and history snapshots are not retained by that cache. Dragging translates a
+render layer rather than rebuilding the graph. Artwork loads only for a selected preview.
 The map reuses the saved Local/Server catalog; normal source refresh, artwork
 and explicit server playback retain their existing network behavior.
 
-Map regressions cover missing tags, compilation contents, navigation/playback,
+Map regressions cover exact relationship evidence and supporting tracks, tag
+opt-in, session boundaries, missing tags, compilation contents, navigation/playback,
 source isolation, cache invalidation and cancellation. The R4 device performance
 check uses 50,000 synthetic tracks / 5,000 artists and requires a background page
 build below 1.5 seconds, a cached read below 50 ms, and gesture-frame p95 below

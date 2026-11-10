@@ -80,4 +80,82 @@ class ListeningMapTest {
             assertEquals(3, checked)
         }
     }
+
+    @Test fun connectionsUseActualSharedAlbumsAndNeverTheGenericLibrary() {
+        val a = first.copy(artist = "A", albumArtist = "Compilation", album = "Shared record")
+        val b = a.copy(uri = "b", artist = "B")
+        val c = a.copy(uri = "c", artist = "C", album = "Different record")
+        val page = buildMapPage(listOf(a, b, c), MapRequest(artist = "a", mode = MapMode.CONNECTIONS))
+        assertEquals("A", page.center?.name)
+        assertTrue(page.nodes.any { it.id == "b" })
+        assertFalse(page.nodes.any { it.id == "c" || it.id == "a" })
+        assertEquals(1, page.links.single { it.artist == "b" }.albums)
+        assertEquals(listOf(a, b), mapConnectionSongs(listOf(a, b, c), "a", "b", ListeningHistory(), false))
+        val isolated = c.copy(artist = "Isolated", albumArtist = "Isolated")
+        assertTrue(buildMapPage(listOf(a, b, isolated),
+            MapRequest(artist = "isolated", mode = MapMode.CONNECTIONS)).nodes.isEmpty())
+    }
+
+    @Test fun genreConnectionsAreExplicitlyOptionalAndExplainTagsNotSimilarity() {
+        val a = first.copy(artist = "A", albumArtist = "A", genre = "Ambient; Dub")
+        val b = second.copy(artist = "B", albumArtist = "B", genre = "ambient; Rock")
+        val c = b.copy(uri = "c", title = "Other genre", genre = "Rock")
+        val request = MapRequest(artist = "a", mode = MapMode.CONNECTIONS)
+        assertTrue(buildMapPage(listOf(a, b, c), request).nodes.isEmpty())
+        val page = buildMapPage(listOf(a, b, c), request.copy(genreLinks = true))
+        assertEquals(listOf("b"), page.nodes.map { it.id })
+        assertEquals(listOf("ambient"), page.links.single().genres)
+        assertTrue(page.links.single().explanation.contains("not a claim of musical similarity"))
+        assertEquals(listOf(a, b), mapConnectionSongs(listOf(a, b, c), "a", "b", ListeningHistory(), true))
+    }
+
+    @Test fun listeningLinksRequireTwoRealAdjacentPlaysInTheCurrentCatalogAndSession() {
+        val a = first.copy(artist = "A", albumArtist = "A")
+        val b = second.copy(artist = "B", albumArtist = "B")
+        fun event(song: Song, time: Long) = ListenEvent(song.uri, song.title, song.artist, song.album, time)
+        val request = MapRequest(artist = "a", mode = MapMode.CONNECTIONS)
+        val once = ListeningHistory(recent = listOf(event(a, 1000), event(b, 2000)))
+        assertTrue(buildMapPage(listOf(a, b), request, once).nodes.isEmpty())
+        val twice = once.copy(recent = once.recent + event(a, 3000))
+        val page = buildMapPage(listOf(a, b), request, twice)
+        assertEquals(listOf("b"), page.nodes.map { it.id })
+        assertEquals(2, page.links.single().adjacentPlays)
+        assertEquals(listOf(a, b), mapConnectionSongs(listOf(a, b), "a", "b", twice, false))
+        assertTrue(buildMapPage(listOf(a, b), request, once.copy(recent = listOf(
+            event(a, 1000), event(b, MAP_SESSION_GAP_MS + 2000), event(a, 2 * MAP_SESSION_GAP_MS + 3000)
+        ))).nodes.isEmpty())
+        val missing = b.copy(uri = "deleted")
+        assertTrue(buildMapPage(listOf(a, b), request, once.copy(recent = listOf(
+            event(a, 1000), event(missing, 2000), event(b, 3000), event(missing, 4000), event(a, 5000)
+        ))).nodes.isEmpty())
+    }
+
+    @Test fun discoveryBadgesReflectRecordedHistoryAndCacheInvalidatesWithEvidence() = runBlocking {
+        val a = first.copy(artist = "A", albumArtist = "A")
+        val b = second.copy(artist = "B", albumArtist = "B")
+        val songs = listOf(a, b)
+        val cache = ListeningMapCache()
+        val request = MapRequest(artist = "a", mode = MapMode.CONNECTIONS)
+        assertTrue(cache.page(songs, request).nodes.isEmpty())
+        val history = ListeningHistory(counts = mapOf(b.uri to 2L), lastPlayed = mapOf(b.uri to 1000L),
+            recent = listOf(ListenEvent(a.uri, "", "", "", 1000), ListenEvent(b.uri, "", "", "", 2000),
+                ListenEvent(a.uri, "", "", "", 3000)))
+        val linked = cache.page(songs, request, history)
+        assertEquals(2, cache.builds)
+        assertTrue(linked.nodes.single().played)
+        assertEquals("Unheard 90+ days", mapDiscoveryLabel(linked.nodes.single(), 91L * 24 * 60 * 60_000))
+        assertEquals("Unexplored here", mapDiscoveryLabel(linked.center!!))
+        assertSame(linked, cache.page(songs, request, history))
+    }
+
+    @Test fun focusedConnectionsStayBoundedForLargeLibraries() {
+        val songs = (0 until 50_000).map { first.copy(uri = "$it", artist = "Artist ${it % 5000}",
+            albumArtist = "Anchor", album = "Album $it") }
+        val page = buildMapPage(songs, MapRequest(artist = "anchor", pageSize = 7, mode = MapMode.CONNECTIONS))
+        assertEquals(5000, page.matches)
+        assertEquals(7, page.nodes.size)
+        assertEquals(7, page.links.size)
+        assertEquals("Anchor", page.center?.name)
+        assertTrue(page.links.all { it.albums == 10 })
+    }
 }
