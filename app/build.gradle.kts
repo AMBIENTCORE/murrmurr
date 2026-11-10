@@ -12,8 +12,8 @@ android {
         applicationId = "io.github.ambientcore.resonance"
         minSdk = 30
         targetSdk = 36
-        versionCode = 35
-        versionName = "0.9.19"
+        versionCode = 36
+        versionName = "0.9.20"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     buildFeatures { compose = true; buildConfig = true }

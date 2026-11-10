@@ -27,7 +27,6 @@ import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
-import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
@@ -97,11 +96,6 @@ fun MurrmurrApp(model: MusicViewModel, requestPermission: () -> Unit) {
         val uriHandler = LocalUriHandler.current
         var tabs by rememberSaveable { mutableStateOf(listOf(0, 0)) }
         val tab = tabs[source.ordinal]
-        var mapSources by rememberSaveable { mutableStateOf(listOf(false, false)) }
-        val mapOpen = mapSources[source.ordinal]
-        fun setMapOpen(open: Boolean) {
-            mapSources = mapSources.mapIndexed { index, old -> if (index == source.ordinal) open else old }
-        }
         var expanded by rememberSaveable { mutableStateOf(false) }
         var controlsTop by remember { mutableFloatStateOf(Float.NaN) }
         val density = LocalDensity.current
@@ -170,9 +164,8 @@ fun MurrmurrApp(model: MusicViewModel, requestPermission: () -> Unit) {
             }
             songBrowseRequest = null
         }
-        BackHandler(expanded || collection != null || mapOpen || tab != 0) {
+        BackHandler(expanded || collection != null || tab != 0) {
             when { expanded -> expanded = false; collection != null -> closeCollection()
-                mapOpen -> setMapOpen(false)
                 else -> tabs = tabs.mapIndexed { index, old -> if (index == source.ordinal) 0 else old } }
         }
         CompositionLocalProvider(
@@ -197,7 +190,7 @@ fun MurrmurrApp(model: MusicViewModel, requestPermission: () -> Unit) {
                             "Stats" to Icons.Rounded.BarChart).forEachIndexed { index, (label, icon) ->
                             NavigationBarItem(selected = tab == index, onClick = {
                                 tabs = tabs.mapIndexed { position, old -> if (position == source.ordinal) index else old }
-                                collections = emptyList(); setMapOpen(false)
+                                collections = emptyList()
                             },
                                 icon = { Icon(icon, label) }, label = { Text(label, fontSize = 11.sp) },
                                 colors = NavigationBarItemDefaults.colors(indicatorColor = InputSurface,
@@ -214,12 +207,11 @@ fun MurrmurrApp(model: MusicViewModel, requestPermission: () -> Unit) {
             } else Column(Modifier.fillMaxSize().padding(padding)) {
                 Row(Modifier.fillMaxWidth().padding(start = 22.dp, end = 12.dp, top = 10.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                     if (collection != null) IconButton(onClick = ::closeCollection) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Back to library") }
-                    else if (mapOpen) IconButton(onClick = { setMapOpen(false) }) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Close listening map") }
                     else Image(painterResource(R.drawable.murrmurr_logo), null,
                         modifier = Modifier.size(32.dp).clip(RoundedCornerShape(7.dp)).testTag("app-logo"))
                     Column(Modifier.weight(1f).padding(start = 10.dp)) {
-                        Text(if (collection != null) "Collection" else if (mapOpen) "Listening map" else appName, fontWeight = FontWeight.Bold,
-                            fontSize = if (collection == null && !mapOpen) 24.sp else 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(if (collection == null) appName else "Collection", fontWeight = FontWeight.Bold,
+                            fontSize = if (collection == null) 24.sp else 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                     IconButton(onClick = { model.play(data.songs, shuffle = true) }, enabled = data.songs.isNotEmpty(),
                         modifier = Modifier.testTag("toolbar-shuffle"),
@@ -265,16 +257,11 @@ fun MurrmurrApp(model: MusicViewModel, requestPermission: () -> Unit) {
                             groupByAlbum = selected.groupByAlbum,
                             openAlbum = { group -> openCollection(Collection(group.name, group.subtitle, group.songs)) })
                     }
-                    mapOpen -> browseState.SaveableStateProvider("$browseKey:map") {
-                        ListeningMapScreen(data.songs, model.listeningMap, model::play, model::queue,
-                            { group -> openCollection(Collection(group.name, group.subtitle, group.songs)) }, history.data)
-                    }
                     tab == 0 -> browseState.SaveableStateProvider("$browseKey:home") {
-                        Home(data, model, ::pickFolder, ::openCollection, onAdd, onDetails, { setMapOpen(true) })
+                        Home(data, model, ::pickFolder, ::openCollection, onAdd, onDetails)
                     }
                     tab == 1 -> browseState.SaveableStateProvider("$browseKey:library") {
-                        Library(sorted, model, data.favorites, ::pickFolder, ::openCollection, onAdd, onDetails,
-                            { setMapOpen(true) })
+                        Library(sorted, model, data.favorites, ::pickFolder, ::openCollection, onAdd, onDetails)
                     }
                     tab == 2 -> browseState.SaveableStateProvider("$browseKey:search") {
                         Search(sorted, model, data.favorites, onAdd, onDetails, ::openCollection)
@@ -386,7 +373,7 @@ fun MurrmurrApp(model: MusicViewModel, requestPermission: () -> Unit) {
 
 @Composable
 private fun Home(data: LibraryData, model: MusicViewModel, pickFolder: () -> Unit, open: (Collection) -> Unit,
-    add: (Song) -> Unit, details: (Song) -> Unit, openMap: () -> Unit) {
+    add: (Song) -> Unit, details: (Song) -> Unit) {
     val source by model.source.collectAsStateWithLifecycle()
     val albums = remember(data.songs) { recentlyAddedAlbums(data.songs) }
     val recent = remember(data.songs) { sortedSongs(data.songs, SongSort.NEWEST).take(12) }
@@ -394,15 +381,6 @@ private fun Home(data: LibraryData, model: MusicViewModel, pickFolder: () -> Uni
     val (albumMode, changeAlbumMode) = rememberBrowseMode("home-albums", BrowseMode.ICONS_LARGE)
     val (trackMode, changeTrackMode) = rememberBrowseMode("home-tracks")
     BrowseGrid(trackMode, Modifier.testTag("home-list")) {
-        fullItem("listening-map") {
-            OutlinedButton(onClick = openMap, modifier = Modifier.fillMaxWidth().padding(horizontal = 22.dp, vertical = 6.dp)
-                .testTag("open-listening-map")) {
-                Icon(Icons.Rounded.Hub, null, Modifier.size(20.dp))
-                Text("Listening map", Modifier.padding(start = 8.dp))
-                Spacer(Modifier.weight(1f))
-                Icon(Icons.AutoMirrored.Rounded.ArrowForward, null, Modifier.size(18.dp))
-            }
-        }
         if (data.songs.isEmpty()) {
             fullItem { EmptyLibrary(pickFolder, source == LibrarySource.SERVER) }
         } else {
@@ -470,7 +448,7 @@ private fun SectionTitle(title: String, subtitle: String) {
 
 @Composable
 private fun Library(songs: List<Song>, model: MusicViewModel, favorites: Set<String>, pickFolder: () -> Unit,
-    open: (Collection) -> Unit, add: (Song) -> Unit, details: (Song) -> Unit, openMap: () -> Unit) {
+    open: (Collection) -> Unit, add: (Song) -> Unit, details: (Song) -> Unit) {
     val source by model.source.collectAsStateWithLifecycle()
     var category by rememberSaveable { mutableStateOf(LibraryCategory.SONGS) }
     var queries by rememberSaveable { mutableStateOf(List(LibraryCategory.entries.size) { "" }) }
@@ -503,10 +481,6 @@ private fun Library(songs: List<Song>, model: MusicViewModel, favorites: Set<Str
                             trailingIcon = { if (category == option) Icon(Icons.Rounded.Check, null, tint = Lime) },
                             onClick = { category = option; categories = false })
                     }
-                    HorizontalDivider()
-                    DropdownMenuItem(text = { Text("Listening map") }, leadingIcon = { Icon(Icons.Rounded.Hub, null) },
-                        modifier = Modifier.testTag("library-listening-map"),
-                        onClick = { categories = false; openMap() })
                 }
             }
             CompactSearchField(query, "Search ${category.label.lowercase()}", { value ->
@@ -551,7 +525,7 @@ private fun CategorySearch(query: String, label: String, change: (String) -> Uni
 }
 
 @Composable
-internal fun CompactSearchField(query: String, label: String, change: (String) -> Unit, modifier: Modifier,
+private fun CompactSearchField(query: String, label: String, change: (String) -> Unit, modifier: Modifier,
     tag: String, clearLabel: String) {
     val focus = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
